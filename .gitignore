@@ -1,0 +1,34 @@
+# 依赖（pnpm junction，不入库）
+node_modules/
+
+# 本机专用：把插件挂进真实 profile 的覆盖层，含绝对路径
+.verify-patch.yml
+
+# 测试运行时产生的临时 DSH_HOME（每种跑法一份）
+.tmp-dsh-home*/
+.tmp-*/
+
+# 日志与崩溃转储
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 历史遗留的整目录备份（已由 git 接管）
+.backup-*/
+
+# 打包产物（由 pnpm pack 生成，不入库）
+*.tgz
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时探针脚本（本地排查用，不入库）
+_probe*.mjs
+_p_*.test.mjs
+check-*.mjs
+verify-fix.mjs
+_bisect.mjs

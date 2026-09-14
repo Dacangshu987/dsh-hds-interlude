@@ -1,0 +1,10 @@
+# dsh-hds-interlude bundle patch
+#
+# 把 hds-interlude 插件行插入 dsh profile 名单。安装方式：
+#   dsh plugin --profile web add link:D:/ds-harness-test/111/dsh-hds-interlude
+#
+# 该行以普通 Cordis 插件加载 lib/index.js；它注入 agents / systemPrompt / tools /
+# commands / settings 服务，因此应与 dsh-base 并列挂载。
+- insert:
+    - id: hds-interlude
+      name: dsh-hds-interlude
