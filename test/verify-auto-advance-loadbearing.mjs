@@ -11,13 +11,40 @@
  * 用法：node test/verify-auto-advance-loadbearing.mjs
  */
 import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const INDEX = fileURLToPath(new URL('../lib/index.js', import.meta.url))
 const SCHEMA = fileURLToPath(new URL('../lib/schema.js', import.meta.url))
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const original = fs.readFileSync(INDEX, 'utf8')
 const originalSchema = fs.readFileSync(SCHEMA, 'utf8')
+
+/**
+ * **在沙箱副本里做注入，绝不改写真实源码。**
+ *
+ * 早先的写法是就地改写 lib/index.js、跑完再还原。它的致命问题是扛不住
+ * SIGKILL（超时被 taskkill / 强杀时任何 exit / signal 钩子都不会执行），
+ * 于是坏版本被永久留在磁盘上——而它是合法 JS，`node --check` 照样通过，
+ * 没人会发现。这里改成：把 lib/ 与 test/ 复制到临时目录，在副本里注入与运行。
+ * 真实源码全程只读，进程被杀也污染不到它。
+ */
+const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'hds-loadbearing-'))
+fs.cpSync(path.join(ROOT, 'lib'), path.join(SANDBOX, 'lib'), { recursive: true })
+fs.cpSync(path.join(ROOT, 'test'), path.join(SANDBOX, 'test'), { recursive: true })
+// 让沙箱里的相对 import（node_modules 解析）能走到真实依赖
+const nm = path.join(ROOT, 'node_modules')
+if (fs.existsSync(nm)) fs.symlinkSync(nm, path.join(SANDBOX, 'node_modules'), 'junction')
+
+const SANDBOX_INDEX = path.join(SANDBOX, 'lib', 'index.js')
+const SANDBOX_SCHEMA = path.join(SANDBOX, 'lib', 'schema.js')
+
+const cleanup = () => {
+  try { fs.rmSync(SANDBOX, { recursive: true, force: true }) } catch { /* 尽力而为 */ }
+}
+process.on('exit', cleanup)
 
 /**
  * 把「故事续写写出来的话到底有没有发出去」这一环整段拿掉，只留 agent.followup。
@@ -61,21 +88,14 @@ function makeQuotaBlockingIndex(src) {
   return src.replace(FIXED_QUOTA, OLD_QUOTA)
 }
 
-let restored = false
-const restore = () => {
-  if (restored) return
-  restored = true
-  fs.writeFileSync(INDEX, original, 'utf8')
-  fs.writeFileSync(SCHEMA, originalSchema, 'utf8')
-}
-
-/** 跑一遍测试，返回红掉的用例行。 */
+/** 跑一遍测试，返回红掉的用例行。在**沙箱副本**里跑，绝不碰真实源码。 */
 function runTests() {
   let output = ''
   try {
     output = execFileSync(process.execPath, ['test/proactive-cold.test.mjs'], {
-      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      cwd: SANDBOX,
       encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
   } catch (error) {
     output = String(error.stdout ?? '') + String(error.stderr ?? '')
@@ -105,7 +125,7 @@ try {
     console.error('无法生成 buggy 版本（结构已变），承重验证需要更新')
     process.exit(2)
   }
-  fs.writeFileSync(INDEX, buggy, 'utf8')
+  fs.writeFileSync(SANDBOX_INDEX, buggy, 'utf8')
   console.log('场景一：把自动推进改回「只 followup、不投递」…\n')
   const redsOne = newReds(runTests())
   for (const line of redsOne) console.log('  ' + line)
@@ -119,9 +139,9 @@ try {
     console.error('无法改回 schema 默认值（结构已变），承重验证需要更新')
     process.exit(2)
   }
-  fs.writeFileSync(SCHEMA, offSchema, 'utf8')
+  fs.writeFileSync(SANDBOX_SCHEMA, offSchema, 'utf8')
   // 分支代码必须还原成修好的版本，否则场景二会退化成场景一的复现。
-  fs.writeFileSync(INDEX, original, 'utf8')
+  fs.writeFileSync(SANDBOX_INDEX, original, 'utf8')
   console.log('\n场景二：分支保留，但把 deliverAutoAdvance 的默认值改回 false…\n')
   const redsTwo = newReds(runTests())
   for (const line of redsTwo) console.log('  ' + line)
@@ -135,8 +155,8 @@ try {
     console.error('无法还原配额顺序（结构已变），承重验证需要更新')
     process.exit(2)
   }
-  fs.writeFileSync(INDEX, quotaBuggy, 'utf8')
-  fs.writeFileSync(SCHEMA, originalSchema, 'utf8')
+  fs.writeFileSync(SANDBOX_INDEX, quotaBuggy, 'utf8')
+  fs.writeFileSync(SANDBOX_SCHEMA, originalSchema, 'utf8')
   console.log('\n场景三：把配额闸改回「承诺型也一起挡」…\n')
   const redsThree = newReds(runTests())
   for (const line of redsThree) console.log('  ' + line)
@@ -146,8 +166,7 @@ try {
 
   console.log('')
   console.log(ok ? '✅ 测试确实在检验「自动推进的话有没有真的发出去」' : '❌ 测试是摆设')
-  restore()
   process.exit(ok ? 0 : 1)
 } finally {
-  restore()
+  cleanup()
 }
