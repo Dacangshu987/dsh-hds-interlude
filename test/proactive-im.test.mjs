@@ -51,6 +51,12 @@ const withKeepAlive = async (promise) => {
 const assistantEvent = (sessionId, text, turn = 1) => ({ type: 'assistant/message', data: { turn, step: 1, message: { content: [{ type: 'text', text }] } } })
 const turnEndEvent = (turn = 1) => ({ type: 'turn/end', data: { turn, reason: 'completed' } })
 
+/** interlude_say 的工具调用事件（形态与真实会话日志一致）。 */
+const sayEvent = (text, name = 'interlude_say') => ({
+  type: 'tool/call',
+  data: { turn: 1, step: 1, callId: 'call_1', name, arguments: JSON.stringify({ text }) },
+})
+
 console.log('文本提取')
 
 await check('textOfContent 只取 text 块，忽略 reasoning / tool', () => {
@@ -87,7 +93,7 @@ await check('turn/end 立即结算，并把多段 assistant 文本合并', async
   ctx.emit('session/event', session, assistantEvent('cap-1', '我摸鱼呢'))
   ctx.emit('session/event', session, turnEndEvent())
 
-  const text = await pending
+  const { text } = await pending
   assert.equal(text, '在吗\n我摸鱼呢')
   capture.dispose()
 })
@@ -97,7 +103,7 @@ await check('超时后返回已捕获的内容（不必等 turn/end）', async (
   const capture = installProactiveCapture(ctx)
   const pending = capture.begin('cap-2', 30)
   ctx.emit('session/event', { id: 'cap-2' }, assistantEvent('cap-2', '刚到家'))
-  const text = await withKeepAlive(pending)
+  const { text } = await withKeepAlive(pending)
   assert.equal(text, '刚到家')
   capture.dispose()
 })
@@ -105,7 +111,7 @@ await check('超时后返回已捕获的内容（不必等 turn/end）', async (
 await check('没有任何写回时超时返回空串', async () => {
   const ctx = new Context()
   const capture = installProactiveCapture(ctx)
-  const text = await withKeepAlive(capture.begin('cap-3', 20))
+  const { text } = await withKeepAlive(capture.begin('cap-3', 20))
   assert.equal(text, '')
   capture.dispose()
 })
@@ -115,7 +121,7 @@ await check('事件属于别的会话时不串台', async () => {
   const capture = installProactiveCapture(ctx)
   const pending = capture.begin('cap-4', 30)
   ctx.emit('session/event', { id: 'other-session' }, assistantEvent('other-session', '别人的话'))
-  assert.equal(await withKeepAlive(pending), '')
+  assert.equal((await withKeepAlive(pending)).text, '')
   capture.dispose()
 })
 
@@ -124,20 +130,58 @@ await check('没有 session id 的事件被忽略', async () => {
   const capture = installProactiveCapture(ctx)
   const pending = capture.begin('cap-5', 25)
   ctx.emit('session/event', {}, assistantEvent('cap-5', '走丢了'))
-  assert.equal(await withKeepAlive(pending), '')
+  assert.equal((await withKeepAlive(pending)).text, '')
   capture.dispose()
 })
 
-await check('同一会话重复 begin 会先结算上一个窗口', async () => {
+await check('interlude_say 的调用被捕获为 speech，与正文分开', async () => {
+  // 这是「从根上分离」的核心：正文（含思考）走 text，发言走 speech。
+  // 两者在通道上不同，所以模型把思考写进正文不会再有任何投递后果。
   const ctx = new Context()
+  const capture = installProactiveCapture(ctx)
+  const pending = capture.begin('cap-say', 5_000)
+
+  ctx.emit('session/event', { id: 'cap-say' }, assistantEvent('cap-say', '用户问“那今天呢”。我组织一下，要不要回他。'))
+  ctx.emit('session/event', { id: 'cap-say' }, sayEvent('今天不算，说完就睡\n你倒管起我来了'))
+  ctx.emit('session/event', { id: 'cap-say' }, turnEndEvent())
+
+  const { text, speech } = await pending
+  assert.ok(text.includes('我组织一下'), '正文照旧被捕获（留作故事）')
+  assert.deepEqual(speech, ['今天不算，说完就睡', '你倒管起我来了'], '工具里的每行各成一条')
+  capture.dispose()
+})
+
+await check('工具名不是 interlude_say 时不误捕获', async () => {
+  const ctx = new Context()
+  const capture = installProactiveCapture(ctx)
+  const pending = capture.begin('cap-say2', 5_000)
+  // 其它工具（例如 interlude_plan）的 arguments 里也可能有 text 字段，不能当发言。
+  ctx.emit('session/event', { id: 'cap-say2' }, sayEvent('不该被当成发言', 'interlude_plan'))
+  ctx.emit('session/event', { id: 'cap-say2' }, turnEndEvent())
+  assert.deepEqual((await pending).speech, [])
+  capture.dispose()
+})
+
+await check('interlude_say 参数坏掉时安静忽略，不抛错', async () => {
+  const ctx = new Context()
+  const capture = installProactiveCapture(ctx)
+  const pending = capture.begin('cap-say3', 5_000)
+  ctx.emit('session/event', { id: 'cap-say3' }, { type: 'tool/call', data: { turn: 1, step: 1, name: 'interlude_say', arguments: '{不是合法 JSON' } })
+  ctx.emit('session/event', { id: 'cap-say3' }, { type: 'tool/call', data: { turn: 1, step: 1, name: 'interlude_say', arguments: '{}' } })
+  ctx.emit('session/event', { id: 'cap-say3' }, turnEndEvent())
+  assert.deepEqual((await pending).speech, [])
+  capture.dispose()
+})
+
+await check('同一会话重复 begin 会先结算上一个窗口', async () => {  const ctx = new Context()
   const capture = installProactiveCapture(ctx)
   const first = capture.begin('cap-6', 5_000)
   const second = capture.begin('cap-6', 5_000)
   ctx.emit('session/event', { id: 'cap-6' }, assistantEvent('cap-6', '第二轮'))
   ctx.emit('session/event', { id: 'cap-6' }, turnEndEvent())
 
-  assert.equal(await first, '', '旧窗口应以空串收束')
-  assert.equal(await second, '第二轮', '新窗口应拿到这一轮的话')
+  assert.equal((await first).text, '', '旧窗口应以空串收束')
+  assert.equal((await second).text, '第二轮', '新窗口应拿到这一轮的话')
   capture.dispose()
 })
 
@@ -147,13 +191,13 @@ await check('dispose 会结算挂起的窗口而不是泄漏', async () => {
   const pending = capture.begin('cap-7', 5_000)
   ctx.emit('session/event', { id: 'cap-7' }, assistantEvent('cap-7', '没说完'))
   capture.dispose()
-  assert.equal(await pending, '没说完')
+  assert.equal((await pending).text, '没说完')
   assert.equal(capture.size(), 0)
 })
 
 await check('缺少 ctx.on 时仍可用（退化为纯超时）', async () => {
   const capture = installProactiveCapture({})
-  const text = await withKeepAlive(capture.begin('cap-8', 20))
+  const { text } = await withKeepAlive(capture.begin('cap-8', 20))
   assert.equal(text, '')
   capture.dispose()
 })

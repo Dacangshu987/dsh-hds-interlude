@@ -332,5 +332,78 @@ check('「对自己宣告不发」不能误伤有听众的正常台词', () => {
   assert.equal(looksLikeSelfNarration('（今天真累啊，不过还行）').leak, false)
 })
 
+/* ------------------------------------------------- 从根上分离：interlude_say */
+
+console.log('\n从根上分离：发言走工具，正文只当故事')
+
+check('显式发言优先于正文提取（interlude_say）', () => {
+  // 「从根上分离」的主路径：模型调了 interlude_say 时，那几句话就是权威，
+  // **不再看正文**。于是正文里写什么（包括思考、列出的候选台词）都不会被误发。
+  //
+  // 这从根上消除了前两次线上事故：它们都源于「从正文的文本形态猜发言」。
+  const bodyWithCandidates = [
+    '用户问“那今天呢”。这是在回应我说的“明天要早睡”。',
+    '',
+    '我组织一下：',
+    '“今天不算，说完就睡”',
+    '“你倒管起我来了”',
+  ].join('\n')
+
+  const d = decideAdvanceDelivery({
+    text: bodyWithCandidates,
+    explicitSpeech: ['今天不算，说完就睡', '你倒管起我来了'],
+    bound: true, lastMessageAt: 0,
+    autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
+  })
+  assert.equal(d.mode, 'speak')
+  assert.equal(d.reason, 'speak-explicit')
+  assert.deepEqual(d.messages, ['今天不算，说完就睡', '你倒管起我来了'])
+
+  // 同样一段正文，没有显式发言时会被自言自语闸拦下——说明分离确实起了作用。
+  const without = decideAdvanceDelivery({
+    text: bodyWithCandidates,
+    bound: true, lastMessageAt: 0,
+    autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
+  })
+  assert.equal(without.mode, 'story-only')
+  assert.equal(without.reason, 'self-narration')
+})
+
+check('显式发言里若写了思考，仍会被自言自语闸拦下', () => {
+  // 少见但发生过：模型把思考也塞进了工具参数。闸对显式发言同样生效。
+  const d = decideAdvanceDelivery({
+    text: '（随便写的故事。）',
+    explicitSpeech: ['用户一直没回，那就这样吧。系统说这条待办到期了。'],
+    bound: true, lastMessageAt: 0,
+    autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
+  })
+  assert.equal(d.mode, 'story-only')
+  assert.equal(d.reason, 'self-narration')
+})
+
+check('显式发言为空时退回兼容路径（不影响旧行为）', () => {
+  const d = decideAdvanceDelivery({
+    text: '（下班回来。）\n\n“在忙吗”',
+    explicitSpeech: [],
+    bound: true, lastMessageAt: 0,
+    autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
+  })
+  assert.equal(d.mode, 'speak')
+  assert.equal(d.reason, 'speak', '兼容路径的 reason 仍是 speak')
+  assert.deepEqual(d.messages, ['在忙吗'])
+})
+
+check('显式发言也要过绑定/间隔/配额这些门', () => {
+  const base = {
+    text: '（故事。）', explicitSpeech: ['在忙吗'],
+    bound: true, lastMessageAt: 0,
+    autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
+  }
+  assert.equal(decideAdvanceDelivery({ ...base, bound: false }).reason, 'no-binding')
+  assert.equal(decideAdvanceDelivery({ ...base, lastMessageAt: Date.now(), messageIntervalMinutes: 120 }).reason, 'message-interval')
+  assert.equal(decideAdvanceDelivery({ ...base, reachedOut: 6 }).reason, 'daily-quota')
+  assert.equal(decideAdvanceDelivery({ ...base, autoMessageEnabled: false }).reason, 'auto-message-disabled')
+})
+
 console.log(`\n故事续写判定：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)
