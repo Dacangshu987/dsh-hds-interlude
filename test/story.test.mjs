@@ -221,12 +221,68 @@ check('空文本 / 非文本安静放过，不抛错', () => {
 })
 
 check('故事续写路径对同一段原文天然安全（提取不到台词）', () => {
-  // 两条路径的防线不同但都成立：续写路径要求「整行引语」，
-  // 一整段自言自语里没有引语行，于是提取为空 → no-speech → 不发。
+  // 两条路径的防线不同但都成立：这段自言自语里没有引语行，提取为空 → 不发。
+  // 现在更早的一道闸（looksLikeSelfNarration）先把它拦掉了，reason 因此是
+  // self-narration 而不是 no-speech —— 前者更准确（它确实是在自言自语，
+  // 而不是「只是没说台词」）。
   const d = decideAdvanceDelivery({ text: LEAKED, bound: true, lastMessageAt: 0, messageIntervalMinutes: 0 })
   assert.equal(d.mode, 'story-only')
-  assert.equal(d.reason, 'no-speech')
+  assert.equal(d.reason, 'self-narration')
   assert.deepEqual(d.messages, [])
+})
+
+check('线上第二次泄漏：思考里的「候选台词」不算台词（2026-09-15 回归）', () => {
+  // 这次的形态更隐蔽：模型在思考**里**用引号写了几行候选台词——
+  //
+  //     我组织一下：
+  //     “今天不算，说完就睡”
+  //     “你倒管起我来了”
+  //
+  // extractSpeech 只认「整行引号」，于是把思考里的**候选**当成真台词发出去，
+  // 用户在 QQ 里收到两句没头没尾的话。
+  //
+  // 缺口在于：到点提醒那条路径早就有自言自语闸，故事续写这条没有。
+  // 这道闸现在补在 decideAdvanceDelivery 里，两条路径共用。
+  const leaked = [
+    '用户问“那今天呢”。这是在回应我说的“明天要早睡，说真的”。',
+    '',
+    '现在是23:00，周二夜间。我（江柚）刚洗完澡躺床上。',
+    '',
+    '我组织一下：',
+    '“今天不算，说完就睡”',
+    '“你倒管起我来了”',
+  ].join('\n')
+
+  // 前提：extractSpeech 单独看**确实**会把这些引语当台词——这是根因所在，
+  // 所以要明确钉住它，免得有人以为 extractSpeech 是安全的。
+  assert.deepEqual(extractSpeech(leaked), ['今天不算，说完就睡', '你倒管起我来了'])
+
+  // 但整段判定必须拦住它。
+  assert.equal(looksLikeSelfNarration(leaked).leak, true)
+  const d = decideAdvanceDelivery({
+    text: leaked, bound: true, lastMessageAt: 0,
+    autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
+  })
+  assert.equal(d.mode, 'story-only')
+  assert.equal(d.reason, 'self-narration')
+  assert.deepEqual(d.messages, [], '思考里的候选台词一个字都不该发出去')
+})
+
+check('自言自语闸不误伤正常续写', () => {
+  // 最要紧的一半：正常的故事 + 真台词必须照发，否则角色就哑了。
+  const normal = [
+    '（下班回来，把包往沙发上一扔。）\n\n先浇了水，又泡了碗面。\n\n“在忙吗”',
+    '今天下班迟了。\n“你忙你的，看到回”',
+    '“青提真留了一半，冰箱里。”',
+  ]
+  for (const text of normal) {
+    const d = decideAdvanceDelivery({
+      text, bound: true, lastMessageAt: 0,
+      autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
+    })
+    assert.equal(d.mode, 'speak', `不该拦：${JSON.stringify(text)}（reason=${d.reason}）`)
+    assert.ok(d.messages.length > 0, `应当有话可发：${JSON.stringify(text)}`)
+  }
 })
 
 check('只读核查发现的漏网形态被拦下（打分制对短句的结构性漏洞）', () => {

@@ -894,6 +894,38 @@ await check('续写里角色没说话（只有旁白）→ 一个字都不发，
   await host.ctx.stop?.()
 })
 
+await check('思考过程被写成正文（含候选台词引号）→ 一条都不发（2026-09-15 回归）', async () => {
+  // 线上第二次泄漏：模型把思考写成正文，并在思考里用引号列了几行候选台词。
+  // extractSpeech 只认「整行引号」，于是把候选当成真台词发到了 QQ——
+  // 用户收到两句没头没尾的话（“今天不算，说完就睡”/“你倒管起我来了”）。
+  //
+  // 缺口：到点提醒路径早就有自言自语闸，故事续写路径没有。这条钉住它。
+  const sessionId = 'session-live-aa-self-narration'
+  const host = await bootLiveAutoAdvance({
+    sessionId,
+    reply: [
+      '用户问“那今天呢”。这是在回应我说的“明天要早睡，说真的”。',
+      '',
+      '现在是23:00，周二夜间。我（江柚）刚洗完澡躺床上。',
+      '',
+      '我组织一下：',
+      '“今天不算，说完就睡”',
+      '“你倒管起我来了”',
+    ].join('\n'),
+  })
+
+  await waitFor(() => host.agent.followups.length > 0, 4000)
+  await sleep(400)
+  assert.equal(host.sent.length, 0, `思考过程一个字都不该发，实际：${JSON.stringify(host.sent)}`)
+  const after = loadState(sessionId)
+  assert.equal(after.lastImDelivery ?? null, null, '不该留下投递回执')
+  assert.equal(after.lastAdvanceDelivery?.mode, 'story-only')
+  assert.equal(after.lastAdvanceDelivery?.reason, 'self-narration')
+  assert.equal(after.reachedOut ?? 0, 0, '没发出去就不该占主动联系名额')
+  assert.ok(after.lastAutoAdvanceAt > 0, '故事本身照写（推进水位要落盘）')
+  await host.ctx.stop?.()
+})
+
 await check('发消息间隔没到 → 台词攒着不发（间隔是「发消息」的节奏，不是「写故事」的）', async () => {
   // 这是把「每 40 分钟一条无端消息」变成「每 120 分钟至多一条」的那道闸。
   const sessionId = 'session-live-aa-interval'

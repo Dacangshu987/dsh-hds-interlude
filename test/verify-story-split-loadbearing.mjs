@@ -11,33 +11,18 @@
  * 用法：node test/verify-story-split-loadbearing.mjs
  */
 import fs from 'node:fs'
-import { execFileSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { createSandbox } from './_loadbearing-sandbox.mjs'
 
-const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const INDEX = fileURLToPath(new URL('../lib/index.js', import.meta.url))
-const STORY = fileURLToPath(new URL('../lib/story.js', import.meta.url))
-const originalIndex = fs.readFileSync(INDEX, 'utf8')
-const originalStory = fs.readFileSync(STORY, 'utf8')
-
-let restored = false
-const restore = () => {
-  if (restored) return
-  restored = true
-  fs.writeFileSync(INDEX, originalIndex, 'utf8')
-  fs.writeFileSync(STORY, originalStory, 'utf8')
-}
+/**
+ * 注入与运行都在**沙箱副本**里做，真实源码全程只读。
+ * 理由见 test/_loadbearing-sandbox.mjs 的模块注释（就地改写扛不住 SIGKILL）。
+ */
+const sandbox = createSandbox()
+const originalIndex = sandbox.read('lib/index.js')
+const originalStory = sandbox.read('lib/story.js')
 
 /** 跑一个测试文件，返回红掉的用例行。 */
-function runTests(file) {
-  let output = ''
-  try {
-    output = execFileSync(process.execPath, [file], { cwd: ROOT, encoding: 'utf8' })
-  } catch (error) {
-    output = String(error.stdout ?? '') + String(error.stderr ?? '')
-  }
-  return output.split('\n').filter(line => line.trim().startsWith('FAIL')).map(line => line.trim())
-}
+const runTests = (file) => sandbox.run(file)
 
 /** 改版前的行为：整段写回直接投递（不问有没有台词）。 */
 function makeSendWholeStoryIndex(src) {
@@ -72,6 +57,18 @@ function makeExtractEverythingStory(src) {
   return src.replace(marker, "  out.push(text.trim())\n  return out\n}\n\n/**\n * 去掉一段文字里的旁白/动作")
 }
 
+/**
+ * 拆掉「自言自语闸」——即 decideAdvanceDelivery 开头那段拦下自说自话的判定。
+ *
+ * 拆掉之后，思考里用引号写的「候选台词」又会被 extractSpeech 挑出来发出去，
+ * 这正是 2026-09-15 第二次线上泄漏的形态。
+ */
+function makeDropSelfNarrationGate(src) {
+  const marker = "  if (looksLikeSelfNarration(text).leak && advanceEnabled) {\n    return { mode: 'story-only', messages: [], reason: 'self-narration', lines: 0 }\n  }"
+  if (!src.includes(marker)) return null
+  return src.replace(marker, '')
+}
+
 let ok = true
 
 try {
@@ -81,7 +78,7 @@ try {
     console.error('无法生成「整段投递」版本（结构已变），承重验证需要更新')
     process.exit(2)
   }
-  fs.writeFileSync(INDEX, whole, 'utf8')
+  sandbox.write('lib/index.js', whole)
   console.log('场景一：把续写改成「写什么就整段发出去」…\n')
   const redsOne = runTests('test/proactive-cold.test.mjs').concat(runTests('test/story.test.mjs'))
   for (const line of redsOne) console.log('  ' + line)
@@ -92,14 +89,14 @@ try {
   // ── 场景二：无视发消息间隔 ────────────────────────────────────
   // 两处都要拆才算「真的不管间隔」：唤起前的预判，以及写完之后那道复核
   // （复核用的就是同一个纯函数）。只拆一处，另一处仍会把消息拦住。
-  fs.writeFileSync(INDEX, originalIndex, 'utf8')
+  sandbox.write('lib/index.js', originalIndex)
   let noInterval = makeIgnoreIntervalIndex(originalIndex)
   if (noInterval) noInterval = makeIgnoreIntervalInDecision(noInterval)
   if (!noInterval) {
     console.error('无法还原间隔门（结构已变），承重验证需要更新')
     process.exit(2)
   }
-  fs.writeFileSync(INDEX, noInterval, 'utf8')
+  sandbox.write('lib/index.js', noInterval)
   console.log('\n场景二：把「发消息间隔」这一关拆掉（每轮有话就发）…\n')
   const redsTwo = runTests('test/proactive-cold.test.mjs')
   for (const line of redsTwo) console.log('  ' + line)
@@ -108,13 +105,13 @@ try {
   if (!twoPass) ok = false
 
   // ── 场景三：台词提取退化成「什么都算台词」───────────────────────
-  fs.writeFileSync(INDEX, originalIndex, 'utf8')
+  sandbox.write('lib/index.js', originalIndex)
   const loose = makeExtractEverythingStory(originalStory)
   if (!loose) {
     console.error('无法还原提取器（结构已变），承重验证需要更新')
     process.exit(2)
   }
-  fs.writeFileSync(STORY, loose, 'utf8')
+  sandbox.write('lib/story.js', loose)
   console.log('\n场景三：让「旁白也算台词」…\n')
   const redsThree = runTests('test/story.test.mjs').concat(runTests('test/proactive-cold.test.mjs'))
   for (const line of redsThree) console.log('  ' + line)
@@ -122,12 +119,29 @@ try {
   console.log(`  → 红掉 ${redsThree.length} 条`)
   if (!threePass) ok = false
 
+  // ── 场景四：拆掉自言自语闸（2026-09-15 第二次泄漏的那道缺口）──────
+  // 这道闸让「思考里的候选台词」不再被当成真台词发出去。拆掉它，
+  // 那两条回归用例必须变红——否则这层保护就是摆设。
+  sandbox.write('lib/story.js', originalStory)
+  const noGate = makeDropSelfNarrationGate(originalStory)
+  if (!noGate) {
+    console.error('无法拆掉自言自语闸（结构已变），承重验证需要更新')
+    process.exit(2)
+  }
+  sandbox.write('lib/story.js', noGate)
+  console.log('\n场景四：拆掉「自言自语闸」（让思考里的候选台词照发）…\n')
+  const redsFour = runTests('test/story.test.mjs').concat(runTests('test/proactive-cold.test.mjs'))
+  for (const line of redsFour) console.log('  ' + line)
+  const fourPass = redsFour.some(line => line.includes('候选台词'))
+  console.log(`  → 红掉 ${redsFour.length} 条`)
+  if (!fourPass) ok = false
+
   console.log('')
   console.log(ok
     ? '✅ 测试确实在检验「故事只留在 DSH，只有角色说的话才发出去」'
     : '❌ 测试是摆设')
-  restore()
+  sandbox.cleanup()
   process.exit(ok ? 0 : 1)
 } finally {
-  restore()
+  sandbox.cleanup()
 }
