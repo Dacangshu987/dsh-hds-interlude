@@ -28,7 +28,7 @@ import path from 'node:path'
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'hds-interlude-p0-'))
 process.env.DSH_HOME = TMP_HOME
 
-const { saveState, loadState, writeHealth, resetWriteHealth, interludeHome, withStateLock } =
+const { saveState, loadState, writeHealth, resetWriteHealth, interludeHome, withStateLock, emptyState, foldFromLog } =
   await import('../lib/state.js')
 
 let passed = 0
@@ -208,6 +208,71 @@ await ok('未知键：顶层保留的同时也进 extensions（两头都不丢�
   const back = loadState(key)
   assert.deepEqual(back.someFutureField, { a: 1 }, '顶层应保留（不与旧行为冲突）')
   assert.deepEqual(back.extensions?.someFutureField, { a: 1 }, 'extensions 兜底桶也应有一份')
+})
+
+/* ------------------------------------------------ ⑤ 条目账本落盘（地基） */
+
+const { appendEntry, verifyQuote } = await import('../lib/script-entry.js')
+
+await ok('条目账本：落盘→读回后 id、正文、发号器都不变', async () => {
+  const key = 'k-ledger-roundtrip'
+  const state = emptyState()
+  appendEntry(state.ledger, { kind: 'user-message', content: '明天下午三点在楼下等你。' })
+  appendEntry(state.ledger, { kind: 'script', content: '（她把手机扣在枕边。）' })
+  saveState(key, state)
+
+  const back = loadState(key)
+  assert.equal(back.ledger.entries.length, 2, '两条都要读回来')
+  assert.equal(back.ledger.entries[0].content, '明天下午三点在楼下等你。')
+  assert.equal(back.ledger.nextId, 3, '发号器必须跟着回来，否则新条目会撞 id')
+  assert.equal(verifyQuote(back.ledger, 1, '明天下午三点').ok, true, '读回来后逐字校验仍然成立')
+})
+
+await ok('条目账本：损坏的值降级成空账本，不抛错', async () => {
+  const key = 'k-ledger-broken'
+  // 直接写一个坏掉的 ledger 字段（模拟旧版本文件 / 手改坏了）。
+  const state = { ...emptyState(), ledger: '这不是账本' }
+  saveState(key, state)
+  const back = loadState(key)
+  assert.ok(Array.isArray(back.ledger.entries), '应降级成合法的空账本')
+  assert.deepEqual(back.ledger.entries, [])
+})
+
+await ok('条目账本：超上限被裁剪，但**发号器不回退**', async () => {
+  const key = 'k-ledger-prune'
+  const state = emptyState()
+  // 造 450 条（超过默认 400 上限）。
+  for (let i = 0; i < 450; i++) appendEntry(state.ledger, { kind: 'script', content: `第${i}段` })
+  saveState(key, state)
+
+  const back = loadState(key)
+  assert.ok(back.ledger.entries.length <= 400, `实际 ${back.ledger.entries.length}`)
+  // 关键：裁剪之后新条目不能撞上仍被引用的旧 id。
+  const fresh = appendEntry(back.ledger, { kind: 'script', content: '新的' })
+  assert.ok(fresh.id > 450, `新 id 应大于 450，实际 ${fresh.id}`)
+  const ids = back.ledger.entries.map(e => e.id)
+  assert.equal(new Set(ids).size, ids.length, 'id 不该有重复')
+})
+
+/* ------------------------------------------------ ⑥ 日志回退保留账本 */
+
+await ok('日志回退（会话被压缩/重置）时账本必须保留', async () => {
+  // 回归：`foldFromLog` 在 cursor > total（日志回退）时会重建状态。
+  // 若忘了把 ledger 列进保留清单，一次日志压缩就会让所有 sourceEntryIds 悬空——
+  // 溯源全部变成谎言，而且**不会报错**。
+  const key = 'k-ledger-rollback'
+  const state = emptyState()
+  appendEntry(state.ledger, { kind: 'script', content: '回退前写下的内容' })
+  state.lastSeenSeq = 999
+  saveState(key, state)
+
+  const agent = {
+    session: { seq: 3, eventAt: () => undefined },
+  }
+  const folded = foldFromLog(agent, loadState(key))
+  assert.equal(folded.ledger.entries.length, 1, '账本不该被日志回退清掉')
+  assert.equal(folded.ledger.entries[0].content, '回退前写下的内容')
+  assert.equal(folded.ledger.nextId, 2, '发号器也要保留')
 })
 
 try { fs.rmSync(TMP_HOME, { recursive: true, force: true }) } catch { /* ignore */ }
