@@ -150,10 +150,10 @@ await check('角色会话首轮 pre-step 注入人设（含填写的 story）', 
   assert.ok(joined.includes('主角的价值观'), joined)
 })
 
-await check('九个工具经真实 defineTool 编译通过', () => {
+await check('十个工具经真实 defineTool 编译通过', () => {
   const names = captured.tools.map(t => t.name).sort()
   assert.deepEqual(names, [
-    'interlude_agency', 'interlude_alter', 'interlude_memory',
+    'interlude_agency', 'interlude_alter', 'interlude_handoff', 'interlude_memory',
     'interlude_plan', 'interlude_preplan', 'interlude_say',
     'interlude_send_image', 'interlude_state', 'interlude_stickers',
   ])
