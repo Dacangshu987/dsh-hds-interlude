@@ -264,6 +264,30 @@ ok('draftFromEvent：无正文的控制事件不进账本', () => {
   assert.equal(draftFromEvent({ type: 'assistant/message', data: { message: { content: [] } } }, {}), undefined)
 })
 
+ok('draftFromEvent：interlude_say 才记成 character-message（真实说出的话）', () => {
+  // 这是认知证据的地基：DSH 里「写出的正文」与「发出去的话」是两件事。
+  // assistant/message → script（叙述），interlude_say → character-message（真说了）。
+  const say = {
+    type: 'tool/call',
+    data: { name: 'interlude_say', arguments: JSON.stringify({ text: '好啊，周末见' }) },
+  }
+  const draft = draftFromEvent(say, {})
+  assert.equal(draft.kind, 'character-message')
+  assert.equal(draft.content, '好啊，周末见')
+})
+
+ok('draftFromEvent：其它工具调用不进账本', () => {
+  for (const name of ['interlude_memory', 'interlude_plan', 'interlude_handoff', 'other_tool']) {
+    assert.equal(draftFromEvent({ type: 'tool/call', data: { name, arguments: '{}' } }, {}), undefined, name)
+  }
+})
+
+ok('draftFromEvent：interlude_say 参数坏掉时安全跳过', () => {
+  for (const args of ['{坏 JSON', null, undefined, JSON.stringify({ text: '  ' }), JSON.stringify({})]) {
+    assert.equal(draftFromEvent({ type: 'tool/call', data: { name: 'interlude_say', arguments: args } }, {}), undefined, String(args))
+  }
+})
+
 ok('recordFromLog：一轮对话按顺序产出条目', () => {
   const state = { ledger: createLedger() }
   const events = [evUser('在吗'), evAssistant('（她放下手机。）\n\n“在的”'), { type: 'turn/end' }]

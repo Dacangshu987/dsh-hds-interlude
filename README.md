@@ -19,6 +19,12 @@
 | 行动窗口（Agency） | `interlude_agency` 用日程 / 隐私 / 设备约束主动联系 |
 | 近期日程（Preplan） | `interlude_preplan` 维护周规律 + 例外，半日投影进提示词 |
 | 长期事实 / 设定演化 | `interlude_memory` 维护承诺、事件、世界事实与累积性设定演化 |
+| **条目账本（溯源地基）** | 每段原文/发言都进账本、拿到单调递增 id；所有「谁说了什么」的声明都必须**逐字引用**原文 |
+| **认知证据** | 区分 `observed/reported/belief/proposal/conditional/confirmed`；**`confirmed` 要求双向证据**（一方提案 + 另一方确认），散文里的引号不算确认 |
+| **生活交接** | `interlude_handoff` 报告位置/活动/在场变化，**每一项都要附本轮原文的逐字片段**，对不上就整项丢弃 |
+| **确定性场景帧** | 从在场名单 / 进行中细节 / 行动窗口**投影**出当下场景（零模型调用），每个字段带溯源；无证据的字段不出现 |
+| **演化门控** | 性格/关系的长期变化必须**跨 ≥2 个不同场景**才够格；维度限白名单 |
+| **交付现实** | 投递失败/部分送达时**明确告诉模型**「没送出去」，避免角色把没送达的话当成对方已看到 |
 | 自动生活推进 | 无对话时按「写故事间隔」续写角色生活（只留在 DSH 里） |
 | 主动联系 | 到期待办经后台扫描唤起一次自然开口，有绑定则直投聊天软件 |
 | **发言分离** | **只有 `interlude_say` 里的话会被发出**；正文（故事/旁白/思考）永不外发 |
@@ -84,7 +90,8 @@ hds-interlude:
 ## 模型工具与管理命令
 
 工具：`interlude_plan` / `interlude_alter` / `interlude_memory` / `interlude_agency` /
-`interlude_preplan` / `interlude_state` / `interlude_say`。
+`interlude_preplan` / `interlude_handoff` / `interlude_state` / `interlude_say` /
+`interlude_send_image` / `interlude_stickers`。
 
 命令（`/interlude`）：`status` / `context` / `schedule` / `memory` / `overlay` /
 `alter` / `agency` / `preplan` / `advance` / `im` / `on` / `off` / `purge`。
@@ -157,6 +164,12 @@ lib/
 ├── render.js       # 提示词投影
 ├── story.js        # 续写 → 台词提取 + 发言门控
 ├── clock/alter/agency/preplan.js   # 原项目纯逻辑的逐行移植
+├── script-entry.js   # 条目账本：单调 id + 逐字引用校验（一切溯源的地基）
+├── life-handoff.js   # 生活交接：位置/活动/在场的逐字溯源 + 场景重置
+├── scene-frame.js    # 确定性场景帧投影（零模型调用）+ 对话突发
+├── knowledge-evidence.js # 认知模式：belief vs confirmed（要求双向证据）
+├── development.js    # 人格演化门控：跨 ≥2 场景 + 维度白名单
+├── recall.js         # 零依赖词法召回（CJK 二字符 shingle + 词元）
 ├── im.js           # 分条与投递记账
 ├── tavern-card.mjs # 酒馆角色卡 ↔ Story 转换
 ├── vendor/         # 第三方移植（见 THIRD_PARTY_NOTICES.md）
