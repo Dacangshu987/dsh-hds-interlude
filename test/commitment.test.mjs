@@ -37,9 +37,12 @@ let failed = 0
  * 返回的 promise 没人接，断言失败会变成 unhandled rejection 而被悄悄吞掉——
  * 测试会全绿，却什么都没验证。这个坑踩过一次：把兜底整个关掉，18 项照样「通过」。
  */
-const check = async (label, fn) => {
+const check = async (label, fn, timeoutMs = 30000) => {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`TIMEOUT: "${label}" 超过 ${timeoutMs}ms`)), timeoutMs)
+  );
   try {
-    await fn()
+    await Promise.race([fn(), timeout]);
     passed += 1
     console.log(`  ok  ${label}`)
   } catch (error) {
@@ -135,7 +138,11 @@ function makeHost() {
   ctx.provide('commands', { register: () => () => {} })
   ctx.provide('settings', { register: (ns, schema, o) => ({ get: () => schema(o?.base ?? {}), watch: () => () => {}, update: async () => {}, replace: async () => {} }) })
   ctx.provide('webServer', { register: () => {} })
-  ctx.provide('dshIm', { async send(botId, targetId, text) { sent.push({ botId, targetId, text }); return { sent: true } } })
+  ctx.provide('credentials', { resolve: async () => undefined })
+  // 自建通道之后，投递不再来自外部 dshIm 服务——通道是本插件自己装的。
+  // 这里给它注入一个**投递出口**：分条、逐条确认、失败记账全都走真实代码路径，
+  // 只有「最后那一跳」被替换掉。
+  ctx.__qqImTransport = async (targetId, text) => { sent.push({ targetId, text }); return { sent: true } }
   ctx.provide('sessionController', {
     async resolveAgent(id) {
       if (live.has(id)) return live.get(id)
@@ -291,15 +298,16 @@ await (async () => {
     const fiber = host2.ctx.plugin(plugin, plugin.Config({
       timeZone: 'Asia/Shanghai',
       proactive: { checkIntervalMinutes: 60, graceMinutes: 0 },
-      im: { enabled: false },
+      // 自建通道：投递只要通道「装好了」就成立（transport 已注入），
+      // 不像 dsh-im 时代还要等外部服务就绪。enabled 打开即代表可以发。
+      im: { enabled: true, appId: 'test-app' },
     }))
     if (fiber?.then) await fiber
 
     const deadline = Date.now() + 6000
     while (Date.now() < deadline && host2.sent.length === 0) await sleep(50)
     assert.ok(host2.sent.length > 0, '补记的待办没有在到点后发出去')
-    assert.equal(host2.sent[0].botId, 'qq_bot')
-    assert.equal(host2.sent[0].targetId, 'jiangyou')
+    assert.equal(host2.sent[0].targetId, 'U')
     assert.equal(loadState(QQ).intents[0].status, 'delivered', '投递成功后待办应结算')
     await host2.ctx.stop?.()
   })

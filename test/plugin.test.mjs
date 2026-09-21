@@ -20,9 +20,12 @@ process.env.DSH_HOME = TEST_HOME
 
 let passed = 0
 let failed = 0
-const check = async (label, fn) => {
+const check = async (label, fn, timeoutMs = 30000) => {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`TIMEOUT: "${label}" 超过 ${timeoutMs}ms`)), timeoutMs)
+  );
   try {
-    await fn()
+    await Promise.race([fn(), timeout]);
     passed += 1
     console.log(`  ok  ${label}`)
   } catch (error) {
@@ -54,6 +57,13 @@ console.log('模块契约')
 await check('导出 name / inject / Config / apply', () => {
   assert.equal(plugin.name, 'hds-interlude')
   assert.deepEqual(plugin.inject, ['agents', 'systemPrompt', 'tools', 'commands', 'settings', 'webServer'])
+  // Cordis 的 inject 没有「可选依赖」语法：`'credentials?'` 会被当成一个名叫
+  // `credentials?` 的必需服务，它永远不存在 → 插件永久 PENDING → dsh 启动失败
+  // （「plugin tree failed to load: 1 entry did not activate」）。
+  // 可选服务只能走 ctx.get()。这条断言守住那个坑。
+  for (const name of plugin.inject) {
+    assert.ok(!name.includes('?'), `inject 里不能写可选后缀：${name}（Cordis 不支持，会导致启动失败）`)
+  }
   assert.equal(typeof plugin.apply, 'function')
   assert.equal(typeof plugin.Config, 'function')
 })
@@ -140,11 +150,12 @@ await check('角色会话首轮 pre-step 注入人设（含填写的 story）', 
   assert.ok(joined.includes('主角的价值观'), joined)
 })
 
-await check('七个工具经真实 defineTool 编译通过', () => {
+await check('九个工具经真实 defineTool 编译通过', () => {
   const names = captured.tools.map(t => t.name).sort()
   assert.deepEqual(names, [
     'interlude_agency', 'interlude_alter', 'interlude_memory',
-    'interlude_plan', 'interlude_preplan', 'interlude_say', 'interlude_state',
+    'interlude_plan', 'interlude_preplan', 'interlude_say',
+    'interlude_send_image', 'interlude_state', 'interlude_stickers',
   ])
   for (const t of captured.tools) {
     assert.equal(typeof t.execute, 'function', `${t.name} 缺 execute`)
@@ -359,6 +370,102 @@ await check('卸载后监听随 effect 回收', async () => {
   const agent = { id: 'after-stop', session: { id: 'after-stop', meta: {}, seq: 0, eventAt: () => undefined } }
   const decision = await ctx.waterfall('agent/pre-step', { agent, messages: [], turn: 1, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [] }))
   assert.equal(decision.messages.length, 0)
+})
+
+/* ---------------------------------- 启动竞速：设置晚到时也要自动连上（线上事故） */
+
+await check('启动时设置还没加载（im 为空）→ 设置就绪后自动补启动通道', async () => {
+  // 线上症状：重启 DSH 后通道「未启动」，必须重新扫码才连上。
+  // 成因：installQqIm 在插件 apply 时对 current().im 做了一次快照，而设置
+  // 加载与插件 apply 竞速——快照拿到空 im，start() 在「缺 appId」处直接返回；
+  // 之后设置就绪，watch 只 applyConfig 却不再启动，通道就一直躺着。
+  //
+  // 用**新插件实例**复现：启动时 im 为空，随后 update 带上 appId，
+  // 断言真的出现了「配置已就绪，启动 QQ 通道…」（补启动被调用）。
+  const raceSettings = fakeSettings()
+  const raceCtx = new Context()
+  raceCtx.provide('agents', { currentInitiator: () => undefined })
+  raceCtx.provide('systemPrompt', { section: () => () => {} })
+  raceCtx.provide('tools', { register: () => () => {} })
+  raceCtx.provide('commands', { register: () => () => {} })
+  raceCtx.provide('settings', raceSettings)
+  raceCtx.provide('webServer', { register: () => {} })
+
+  // 捕获插件 info 日志（info 走 console.log，带 [hds-interlude] 前缀）。
+  const logged = []
+  const realLog = console.log
+  console.log = (...args) => { logged.push(args.join(' ')); realLog(...args) }
+  try {
+    const fiber2 = raceCtx.plugin(plugin, plugin.Config({ timeZone: 'Asia/Shanghai' }))
+    if (fiber2 && typeof fiber2.then === 'function') await fiber2
+    await sleep(20)
+
+    // 设置加载完成，带上已落盘的 appId —— 这正是重启后的真实顺序。
+    await raceSettings._scopes.get('hds-interlude').update({
+      im: { enabled: true, appId: '1905583221', secretRef: 'DSH_QQBOT_APP_SECRET', botId: 'qq' },
+    })
+    await sleep(40)
+  } finally {
+    console.log = realLog
+  }
+
+  assert.ok(
+    logged.some(l => l.includes('配置已就绪，启动 QQ 通道')),
+    `设置就绪后应补启动通道（否则重启后一直「未启动」）。实际日志：\n${logged.filter(l => l.includes('hds-interlude')).join('\n')}`,
+  )
+
+  await raceCtx.stop?.()
+})
+
+await check('凭据服务晚到 → ctx.inject 钩子触发补启动（线上「必须重新扫码」的根因）', async () => {
+  // 线上真相：启动日志里 AppID 明明是对的，通道却「未启动」且**一句原因都没有**。
+  // 因为 credentials 不在 inject 里，插件 apply 时 ctx.get('credentials') 还是
+  // undefined → resolveSecret 抛错 → start() 返回；而那条失败只写 ctx.logger.warn
+  // （不进启动日志）→ 完全静默。扫码能救回来，只因那时凭据服务已就绪。
+  const lateSettings = fakeSettings()
+  const lateCtx = new Context()
+  lateCtx.provide('agents', { currentInitiator: () => undefined })
+  lateCtx.provide('systemPrompt', { section: () => () => {} })
+  lateCtx.provide('tools', { register: () => () => {} })
+  lateCtx.provide('commands', { register: () => () => {} })
+  lateCtx.provide('settings', lateSettings)
+  lateCtx.provide('webServer', { register: () => {} })
+  // 刻意先不给 credentials。
+
+  const logged = []
+  const realLog = console.log
+  console.log = (...args) => { logged.push(args.join(' ')); realLog(...args) }
+  try {
+    const fiber3 = lateCtx.plugin(plugin, plugin.Config({
+      timeZone: 'Asia/Shanghai',
+      // 直接给一份「已配置」的 im：appId 闸门必须能过，才测得到凭据这一环。
+      im: { enabled: true, appId: '1905583221', secretRef: 'DSH_QQBOT_APP_SECRET', botId: 'qq' },
+    }))
+    if (fiber3 && typeof fiber3.then === 'function') await fiber3
+    await sleep(30)
+
+    // 此刻应已因「凭据服务不可用」失败一次（原因现在可见）。
+    assert.ok(
+      logged.some(l => l.includes('无法解析 AppSecret')),
+      `凭据缺失的原因必须可见（否则就是那个静默 bug）。日志：\n${logged.filter(l => l.includes('hds-interlude')).join('\n')}`,
+    )
+
+    // 凭据服务现在才注册 —— 钩子应触发补启动。
+    lateCtx.provide('credentials', {
+      resolve: async () => ({ value: 'FAKE_SECRET_FOR_TEST_32_CHARS_XXXX', source: 'file' }),
+      set: async () => {},
+    })
+    await sleep(60)
+  } finally {
+    console.log = realLog
+  }
+
+  assert.ok(
+    logged.some(l => l.includes('QQ 通道启动中')),
+    `凭据就绪后应自动补启动（用户就不必再扫码）。日志：\n${logged.filter(l => l.includes('hds-interlude')).join('\n')}`,
+  )
+
+  await lateCtx.stop?.()
 })
 
 console.log(`\n通过 ${passed} 项，失败 ${failed} 项`)

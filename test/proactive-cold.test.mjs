@@ -32,9 +32,12 @@ process.env.DSH_HOME = TEST_HOME
 
 let passed = 0
 let failed = 0
-const check = async (label, fn) => {
+const check = async (label, fn, timeoutMs = 30000) => {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`TIMEOUT: "${label}" 超过 ${timeoutMs}ms`)), timeoutMs)
+  );
   try {
-    await fn()
+    await Promise.race([fn(), timeout]);
     passed += 1
     console.log(`  ok  ${label}`)
   } catch (error) {
@@ -47,11 +50,26 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 /* ------------------------------------------------------------------ 夹具 */
 
 /**
- * 造一个「像 dsh-im 真实落盘那样」的集成目录：
- *   integrations/dsh-qq/workspaces.json  → deliveryTargets[botId][targetId].sessionSync
- *   integrations/dsh-qq/bots/<botId>/state.json → sessions[conversationKey] = sessionId
+ * 写一份「本会话已绑定 IM 目标」的绑定关系。
+ *
+ * 自建通道之后绑定由插件自己持有（`integrations/dsh-qq-im/bindings.json`），
+ * 不再借用 dsh-im 的 workspaces.json + state.json。
+ *
+ * 为什么**同时**写旧的 dsh-im 布局：这恰好覆盖了「用户从 dsh-im 迁过来」的真实
+ * 情形——插件启动时会一次性把旧数据导入自己的绑定表。两种来源都写，
+ * 无论哪条路径先命中，用例都在检验真实的绑定解析。
  */
 function writeImIntegration({ channel = 'qq', botId = 'qq_bot', targetId = 'jiangyou', conversationKey, sessionId }) {
+  // ① 新格式：插件自己的绑定表。
+  const home = path.join(TEST_HOME, 'integrations', 'dsh-qq-im')
+  fs.mkdirSync(home, { recursive: true })
+  const file = path.join(home, 'bindings.json')
+  let existing = { version: 1, bindings: {} }
+  try { existing = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { /* 首次写入 */ }
+  existing.bindings[conversationKey] = { sessionId, botId, name: '江柚', boundAt: new Date().toISOString() }
+  fs.writeFileSync(file, JSON.stringify(existing, null, 2), 'utf8')
+
+  // ② 旧格式：保留写入，覆盖迁移路径。
   const dir = path.join(TEST_HOME, 'integrations', `dsh-${channel}`)
   fs.mkdirSync(path.join(dir, 'bots', botId), { recursive: true })
   fs.writeFileSync(path.join(dir, 'workspaces.json'), JSON.stringify({
@@ -72,6 +90,18 @@ function writeImIntegration({ channel = 'qq', botId = 'qq_bot', targetId = 'jian
     sessions: { [conversationKey]: sessionId },
   }), 'utf8')
   clearImBindingCache()
+}
+
+/**
+ * 清掉本用例的全部磁盘痕迹。
+ *
+ * 必须**连绑定表一起清**：`bootWithPendingIntent` 每个用例都会清状态目录，
+ * 但绑定表若留着上一个用例的会话，这个用例就会莫名其妙地「有收件人」，
+ * 从而在断言「不该发」的用例里发出消息。
+ */
+function resetDisk() {
+  fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
+  fs.rmSync(path.join(TEST_HOME, 'integrations'), { recursive: true, force: true })
 }
 
 /** 角色预设目录（门控用它区分角色会话与内置默认预设）。 */
@@ -97,9 +127,18 @@ function fakeAgent(id) {
 
 console.log('绑定自动发现（主动回复发不出去的直接原因）')
 
+/**
+ * dsh-im 时代的遗留数据夹具。
+ *
+ * 这一节测的是 `im-binding.js` 的**只读发现**能力（它读 dsh-im 的
+ * workspaces.json + state.json 反查 conversationKey）。自建通道之后主路径
+ * 不再用它，但这个能力仍在：它是「从 dsh-im 迁过来」的桥梁。
+ * 所以这里保留夹具，验证迁移路径没有因为改造而失灵。
+ */
+writeImIntegration({ conversationKey: 'c2c:U', sessionId: 'session-cold-1' })
+
 await check('从 dsh-im 的会话双向同步里发现绑定，无需人工 im bind', () => {
   const sessionId = 'session-cold-1'
-  writeImIntegration({ conversationKey: 'c2c:USER_A', sessionId })
   const found = discoverImBinding(sessionId)
   assert.ok(found, '应该发现绑定')
   assert.equal(found.botId, 'qq_bot')
@@ -108,7 +147,6 @@ await check('从 dsh-im 的会话双向同步里发现绑定，无需人工 im b
 })
 
 await check('没有开启会话同步的目标不会被误用', () => {
-  writeImIntegration({ conversationKey: 'c2c:USER_B', sessionId: 'session-cold-2' })
   assert.equal(discoverImBinding('session-完全不相干'), undefined)
 })
 
@@ -213,12 +251,20 @@ function makeHost(options = {}) {
   /** 插件报的警告（插件走 ctx.logger.warn，不是 console.warn）。 */
   const warnings = []
   const sent = []
+  // 自建通道之后投递来自本插件内置的通道，而不是外部 dshIm 服务。
+  // 这里注入它的**投递出口**：分条、逐条确认、失败记账全走真实代码路径。
+  //
+  // 保留一个 `dshIm` 形状的可变句柄，是因为下面的用例要临时替换投递行为
+  // （比如让它抛错、或数调用次数）。改的是这个出口，走的仍是真实链路。
   const dshIm = {
-    async send(botId, targetId, text) {
-      sent.push({ botId, targetId, text })
+    __sent: [],
+    async send(_botId, targetId, text) {
+      dshIm.__sent.push(text)
+      sent.push({ targetId, text })
       return { sent: true }
     },
   }
+  let transportOverride = null
   const settings = {
     register(ns, schema, options) {
       const listeners = new Set()
@@ -241,7 +287,12 @@ function makeHost(options = {}) {
   ctx.provide('commands', { register: () => () => {} })
   ctx.provide('settings', settings)
   ctx.provide('webServer', { register: () => {} })
-  ctx.provide('dshIm', dshIm)
+  ctx.provide('credentials', { resolve: async () => undefined })
+  // 投递出口：默认转给 dshIm.send（用例可替换它），走的是通道真实的分条与记账路径。
+  ctx.__qqImTransport = async (targetId, text, transportOptions) => {
+    if (typeof transportOverride === 'function') return transportOverride(targetId, text, transportOptions)
+    return dshIm.send('qq_bot', targetId, text)
+  }
   // 插件的 warn() 走的是 Cordis 内置的 LoggerService（ctx.logger），
   // 不是 console.warn，也不受 provide('logger') 影响——只有给它打补丁才看得到。
   ctx.effect?.(() => {
@@ -274,6 +325,13 @@ function makeHost(options = {}) {
           const which = intent?.id ?? 'unknown'
           this.followups.push(which)
           openings.push(which)
+          // 真实宿主在回合开始时把 followup 的消息以 `user/message` 落进会话
+          // （source.kind === 'plugin'）。这里照实复现：漏掉它就会让
+          // 「插件回合标记」在 assistant 发言之前被清掉，重复投递照样发生。
+          ctx.emit('session/event', this.session, {
+            type: 'user/message',
+            data: { content: [{ type: 'text', text: '（幕间唤起）' }], source: { kind: 'plugin', plugin: 'hds-interlude', form: 'notice' } },
+          })
           // 真实 agent 被唤起后会写出 assistant 文本；捕获器靠这两个事件结算。
           // setTimeout 让「先挂捕获窗口、再产生事件」的顺序与生产一致。
           setTimeout(() => {
@@ -281,6 +339,14 @@ function makeHost(options = {}) {
               type: 'assistant/message',
               data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: intent?.reply ?? '水喝了没' }] } },
             })
+            // `speech` 用来复现「插件唤起的回合里模型调了 interlude_say」——
+            // 这正是重复投递 bug 的现场：主动路径与交互式路径都会看见这段话。
+            if (options.speech) {
+              ctx.emit('session/event', this.session, {
+                type: 'tool/call',
+                data: { turn: 1, step: 1, callId: 'say_1', name: 'interlude_say', arguments: JSON.stringify({ text: options.speech }) },
+              })
+            }
             ctx.emit('session/event', this.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
           }, options.writeDelayMs ?? 5)
         },
@@ -290,7 +356,7 @@ function makeHost(options = {}) {
       return agent
     },
   })
-  return { ctx, sent, live, dshIm, openings, warnings }
+  return { ctx, sent, live, dshIm, openings, warnings, setTransport: fn => { transportOverride = fn } }
 }
 
 /**
@@ -323,9 +389,19 @@ async function waitFor(predicate, timeoutMs = 4000) {
  *   用例会在设置生效之前就已经投递完毕，从而永远通过（假绿）。
  */
 async function bootWithPendingIntent({ sessionId, intent = {}, pluginConfig = {}, integration, hostOptions = {}, statePatch = {} }) {
-  // 每个用例只留自己这一份状态：扫描会遍历整个状态目录，
-  // 前一个用例残留的待办会串到这一个里来。
-  fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
+  // 每个用例只留自己这一份痕迹：扫描会遍历整个状态目录，
+  // 前一个用例残留的待办会串到这一个里来；绑定表同理。
+  resetDisk()
+
+  // 清盘之后**再**写绑定：写在清盘之前会被这一步抹掉，
+  // 于是用例会莫名其妙地「没有收件人」而发不出去。
+  if (integration !== false) {
+    writeImIntegration({
+      conversationKey: `c2c:${sessionId.replace(/^session-(cold-)?/, '').toUpperCase()}`,
+      sessionId,
+      ...integration,
+    })
+  }
 
   const now = Date.now()
   const list = (Array.isArray(intent) ? intent : [intent]).map((item, index) => ({
@@ -346,7 +422,7 @@ async function bootWithPendingIntent({ sessionId, intent = {}, pluginConfig = {}
     // 周期扫描拉到一小时：本用例只能靠「启动扫描 + 精确定时器」通过。
     // graceMinutes=0 让到点即触发，不必再等一分钟宽限。
     proactive: { checkIntervalMinutes: 60, graceMinutes: 0 },
-    im: { enabled: false }, // 也不靠 im.enabled —— 全靠自动发现
+    im: { enabled: true, appId: 'test-app' }, // 也不靠 im.enabled —— 全靠自动发现
     ...pluginConfig,
   })
 
@@ -367,15 +443,15 @@ async function bootWithPendingIntent({ sessionId, intent = {}, pluginConfig = {}
 
 await check('冷会话 + 磁盘上的到点提醒 → 自动唤醒并发到 IM（核心回归）', async () => {
   const sessionId = 'session-cold-e2e'
-  writeImIntegration({ conversationKey: 'c2c:USER_E2E', sessionId })
-  const host = await bootWithPendingIntent({ sessionId })
+  const host = await bootWithPendingIntent({ sessionId, integration: { conversationKey: 'c2c:USER_E2E' } })
 
   const delivered = await waitFor(() => host.sent.length > 0, 6000)
   assert.ok(delivered, '应该真的发出去一条消息，而不是什么都没发生')
   const texts = host.sent.map(item => item.text).join(' ')
   assert.ok(texts.includes('水'), `发出的内容应和待办相关，实际：${texts}`)
-  assert.equal(host.sent[0].botId, 'qq_bot')
-  assert.equal(host.sent[0].targetId, 'jiangyou')
+  // 投递目标是**会话键里的 openid**（`c2c:USER_E2E` → `USER_E2E`）。
+  // 自建通道直接用 openid 投递，不再经过 dsh-im 那层「targetId 别名」间接。
+  assert.equal(host.sent[0].targetId, 'USER_E2E')
 
   const after = loadState(sessionId)
   const intent = after.intents.find(item => item.id === 'i1')
@@ -385,7 +461,6 @@ await check('冷会话 + 磁盘上的到点提醒 → 自动唤醒并发到 IM�
 
 await check('未来的到点时间挂精确定时器，不等周期扫描', async () => {
   const sessionId = 'session-cold-timer'
-  writeImIntegration({ conversationKey: 'c2c:USER_TIMER', sessionId })
   // 到点时间在 600ms 之后：启动扫描时还不够格，必须靠定时器在到点那一刻唤起。
   const host = await bootWithPendingIntent({ sessionId, intent: { dueInMs: 600 } })
 
@@ -397,7 +472,6 @@ await check('未来的到点时间挂精确定时器，不等周期扫描', asyn
 
 await check('休息时段不吞掉承诺型待办（线上 04:38 的「一分钟后提醒我喝水」）', async () => {
   const sessionId = 'session-cold-sleep'
-  writeImIntegration({ conversationKey: 'c2c:USER_SLEEP', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     // 把休息窗口铺满全天 = 「现在是深夜，角色该睡」。承诺型待办仍须放行。
@@ -414,7 +488,6 @@ await check('休息时段不吞掉承诺型待办（线上 04:38 的「一分钟
 
 await check('duringSleepPromises=false 时承诺型也遵守休息时段（可关）', async () => {
   const sessionId = 'session-cold-sleep-off'
-  writeImIntegration({ conversationKey: 'c2c:USER_SLEEP_OFF', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     pluginConfig: {
@@ -431,7 +504,6 @@ await check('duringSleepPromises=false 时承诺型也遵守休息时段（可�
 
 await check('随性起意的 life-event 在休息时段仍然让路', async () => {
   const sessionId = 'session-cold-lazy'
-  writeImIntegration({ conversationKey: 'c2c:USER_LAZY', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     intent: { kind: 'followup', summary: '问问他在干嘛' },
@@ -502,7 +574,6 @@ await check('模型把思考过程写成正文 → 一条都不发，且不重�
     '',
     '不发了。',
   ].join('\n')
-  writeImIntegration({ conversationKey: 'c2c:USER_SN', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     intent: { id: 'i4', summary: '答应过对方：现在00:55，江柚等了一会儿没回音', reply: leaked, dueInMs: -1000 },
@@ -526,7 +597,6 @@ await check('纯旁白正文 → 一条都不发（cleanImText 删光后不能�
     '（她把手机扣在枕边，翻了个身。）',
     '（都这个点了，还是别打扰了吧。）',
   ].join('\n')
-  writeImIntegration({ conversationKey: 'c2c:USER_PN', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     intent: { id: 'i5', summary: '答应过对方：晚点说', reply: narration, dueInMs: -1000 },
@@ -542,7 +612,6 @@ await check('短句自我宣告「我决定不发了。」→ 一条都不发', 
   // 同一次核查发现：打分制要求「命中两处 + 够长」，短句凑不够就被放行。
   // 而自言自语恰恰都是短句——这是结构性漏洞，不是偶发。
   const sessionId = 'session-cold-self-decision'
-  writeImIntegration({ conversationKey: 'c2c:USER_SD', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     intent: { id: 'i6', summary: '答应过对方：晚点说', reply: '我决定不发了。', dueInMs: -1000 },
@@ -561,27 +630,27 @@ await check('投递失败重试时**不重新生成**内容，也不重复已送
   // ③ 若上一轮已送出一部分，用户会看到「前半句旧版本、后半句新版本」的错位。
   const sessionId = 'session-cold-resume'
   const reply = '第一句\n第二句\n第三句'
-  writeImIntegration({ conversationKey: 'c2c:USER_RESUME', sessionId })
 
   let call = 0
   const host = makeHost()
   // 第一次：第一条成功、第二条失败（模拟平台中途限流）。
   // 之后：全部成功。
-  host.dshIm.send = async (botId, targetId, text) => {
+  host.setTransport(async (targetId, text) => {
     call += 1
     if (call === 2) throw Object.assign(new Error('平台限流'), { code: 'delivery-failed' })
-    host.dshIm.__sent = host.dshIm.__sent ?? []
     host.dshIm.__sent.push(text)
     return { sent: true }
-  }
-  fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
+  })
+  resetDisk()
+  // 清盘之后写绑定：写在前面会被 resetDisk 抹掉。
+  writeImIntegration({ conversationKey: 'c2c:USER_RESUME', sessionId })
 
   const config = plugin.Config({
     timeZone: 'Asia/Shanghai',
     // 扫描缩到最短（1 分钟是 schema 下限），这样「第一轮部分失败 → 下一轮重发」
     // 能在测试时限内自然发生，走的就是线上那条路径。
     proactive: { checkIntervalMinutes: 1, graceMinutes: 0, maxPerDay: 9 },
-    im: { enabled: false, waitForTurnMs: 5000 },
+    im: { enabled: true, appId: 'test-app', waitForTurnMs: 5000 },
   })
   const now = Date.now()
   const state = emptyState()
@@ -635,17 +704,18 @@ await check('投递失败重试时**不重新生成**内容，也不重复已送
 })
 
 await check('投递失败会保留待办而不是假装送达', async () => {  const sessionId = 'session-cold-fail'
-  writeImIntegration({ conversationKey: 'c2c:USER_FAIL', sessionId })
 
   const host = makeHost()
   let attempts = 0
-  host.dshIm.send = async () => { attempts += 1; throw Object.assign(new Error('平台限流'), { code: 'delivery-failed' }) }
-  fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
+  host.setTransport(async () => { attempts += 1; throw Object.assign(new Error('平台限流'), { code: 'delivery-failed' }) })
+  resetDisk()
+  // 清盘之后写绑定：写在前面会被 resetDisk 抹掉。
+  writeImIntegration({ conversationKey: 'c2c:USER_FAIL', sessionId })
 
   const config = plugin.Config({
     timeZone: 'Asia/Shanghai',
     proactive: { checkIntervalMinutes: 60, graceMinutes: 0 },
-    im: { enabled: false },
+    im: { enabled: true, appId: 'test-app' },
   })
   const now = Date.now()
   const state = emptyState()
@@ -671,7 +741,6 @@ await check('投递失败会保留待办而不是假装送达', async () => {  c
 
 await check('wakeIdleSessions=false 时不去唤醒冷会话（尊重配置）', async () => {
   const sessionId = 'session-cold-nowake'
-  writeImIntegration({ conversationKey: 'c2c:USER_NOWAKE', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     pluginConfig: { proactive: { checkIntervalMinutes: 60, graceMinutes: 0, wakeIdleSessions: false } },
@@ -688,7 +757,7 @@ await check('没有 IM 绑定的普通 Web 会话不会被主动开口惊动', a
   // 这个会话在磁盘上有待办，但既没有 IM 目标、也没有实时 agent：
   // 它下次被打开时会在幕间块里看到待办，不该为它拉起一个没人看的 agent。
   const sessionId = 'session-web-noim'
-  const host = await bootWithPendingIntent({ sessionId })
+  const host = await bootWithPendingIntent({ sessionId, integration: false })
 
   await sleep(1500)
   assert.equal(host.live.size, 0, '没有投递目标的冷会话不该被唤醒')
@@ -701,8 +770,7 @@ await check('没有 sessionController 时安静跳过，不刷错误日志（精
   // 精简 profile（headless 等）里没有 sessionController：这时必须安静跳过冷会话，
   // 而不是每次扫描都崩在 catch 里刷屏。
   const sessionId = 'session-cold-nocontroller'
-  writeImIntegration({ conversationKey: 'c2c:USER_NC', sessionId })
-  const host = await bootWithPendingIntent({ sessionId, hostOptions: { withoutSessionController: true } })
+  const host = await bootWithPendingIntent({ sessionId, integration: { conversationKey: 'c2c:USER_NC' }, hostOptions: { withoutSessionController: true } })
 
   await sleep(1200)
   assert.equal(host.sent.length, 0, '拿不到 agent 就不该投递')
@@ -719,8 +787,7 @@ await check('实时会话按预设判定角色身份（新会话还没有状态�
   //
   // 这同时也验证反向门控：预设不是角色预设的实时会话不该被处理。
   const sessionId = 'session-live-rolegated'
-  writeImIntegration({ conversationKey: 'c2c:USER_LG', sessionId })
-  fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
+  resetDisk()
   clearImBindingCache()
 
   const host = makeHost()
@@ -739,7 +806,7 @@ await check('实时会话按预设判定角色身份（新会话还没有状态�
     // 休息窗口清空：否则当前若是深夜，自动推进会因休息时段让路，干扰断言。
     runtime: { restWindows: [] },
     proactive: { checkIntervalMinutes: 60, graceMinutes: 0 },
-    im: { enabled: false },
+    im: { enabled: true, appId: 'test-app' },
   })
   const fiber = host.ctx.plugin(plugin, config)
   if (fiber && typeof fiber.then === 'function') await fiber
@@ -757,7 +824,6 @@ await check('并发扫描下每条待办最多开口一次（定时器撞上启�
   // 再读到同一份 pending 状态，为同一条待办再开一次口。
   // 没有互斥防线时实测：i1 被开口 2 次，而 i2 被彻底漏掉。
   const sessionId = 'session-cold-overlap'
-  writeImIntegration({ conversationKey: 'c2c:USER_OV', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     intent: [
@@ -775,6 +841,37 @@ await check('并发扫描下每条待办最多开口一次（定时器撞上启�
 
   const after = loadState(sessionId)
   assert.ok(after.intents.every(i => i.status === 'delivered'), `两条待办都该被处理：${after.intents.map(i => `${i.id}=${i.status}`).join(' ')}`)
+  await host.ctx.stop?.()
+})
+
+await check('插件唤起的回合里调了 interlude_say → 只投一次，不被交互式路径重投（线上「每条都出现两遍」回归）', async () => {
+  // 线上现场：群聊绑定 session-8888ccd0…，一次主动开口之后 QQ 里
+  // 「对了 跟你说个离谱的事」「我家楼下那家面馆 涨价了」「一碗涨两块…」
+  // **每条都出现两遍**，且 state.json 的 lastDelivery 只记了 3 条。
+  //
+  // 根因：插件自己唤起的回合（到点提醒 / 自动推进）由主动投递路径负责投递，
+  // 但同一段 interlude_say 又被 `deliverInteractiveSpeech` 在 turn/end 上收了一遍——
+  // 后者既重复了文字，又**绕过了发消息间隔与每日配额**。
+  const sessionId = 'session-cold-double'
+  const speech = '对了 跟你说个离谱的事\n我家楼下那家面馆 涨价了\n一碗涨两块'
+  const host = await bootWithPendingIntent({
+    sessionId,
+    integration: { conversationKey: 'c2c:USER_DOUBLE' },
+    hostOptions: { speech },
+    // 交互式路径默认要求该会话先从 QQ 说过话；这里没有入站消息，
+    // 关掉这道闸，重复投递若发生就一定会暴露出来（而不是被闸挡掉）。
+    // 注意 `im` 是整段替换（不是深合并），所以 enabled/appId 要一起写。
+    pluginConfig: { im: { enabled: true, appId: 'test-app', interactive: { enabled: true, requireInbound: false } } },
+  })
+
+  const delivered = await waitFor(() => host.sent.length >= 3, 6000)
+  assert.ok(delivered, `三段话都该发出去，实际：${JSON.stringify(host.sent)}`)
+  await sleep(400) // 给重复投递留出发生的时间窗
+
+  const texts = host.sent.map(item => item.text)
+  assert.equal(texts.length, 3, `每条只该出现一次，实际发出 ${texts.length} 条：${JSON.stringify(texts)}`)
+  assert.equal(new Set(texts).size, texts.length, `有重复投递：${JSON.stringify(texts)}`)
+  assert.ok(texts.includes('一碗涨两块'), JSON.stringify(texts))
   await host.ctx.stop?.()
 })
 
@@ -802,7 +899,7 @@ async function bootLiveAutoAdvance({
   statePatch = {},
 }) {
   // 每个用例只留自己这一份状态；扫描遍历整个目录，残留会串台。
-  fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
+  resetDisk()
   clearImBindingCache()
   if (binding) writeImIntegration({ conversationKey: 'c2c:USER_AA', sessionId })
 
@@ -838,7 +935,7 @@ async function bootLiveAutoAdvance({
     timeZone: 'Asia/Shanghai',
     runtime: { restWindows: [], autoAdvanceIntervalMinutes: 5, autoAdvanceJitterMinutes: 0 },
     proactive: { checkIntervalMinutes: 60, graceMinutes: 0 },
-    im: { enabled: false, messageIntervalMinutes: 0 },
+    im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 0 },
     ...pluginConfig,
   })
   const fiber = host.ctx.plugin(plugin, config)
@@ -933,7 +1030,7 @@ await check('发消息间隔没到 → 台词攒着不发（间隔是「发消�
     sessionId,
     // 上次自动消息就在 10 分钟前，而发消息间隔是 120 分钟。
     statePatch: { lastAutoMessageAt: Date.now() - 10 * 60_000 },
-    pluginConfig: { im: { enabled: false, messageIntervalMinutes: 120 } },
+    pluginConfig: { im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 120 } },
   })
 
   await waitFor(() => host.agent.followups.length > 0, 6000)
@@ -961,7 +1058,7 @@ await check('写故事间隔到了、发消息间隔也到了 → 才真的发�
   const host = await bootLiveAutoAdvance({
     sessionId,
     statePatch: { lastAutoMessageAt: Date.now() - 2 * 24 * 60 * 60_000 },
-    pluginConfig: { im: { enabled: false, messageIntervalMinutes: 120 } },
+    pluginConfig: { im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 120 } },
   })
 
   const delivered = await waitFor(() => host.sent.length > 0, 6000)
@@ -1003,7 +1100,7 @@ await check('im.autoMessage=false 时只写故事、不发消息（保留退出�
   const sessionId = 'session-live-aa-off'
   const host = await bootLiveAutoAdvance({
     sessionId,
-    pluginConfig: { im: { enabled: false, autoMessage: false } },
+    pluginConfig: { im: { enabled: true, appId: 'test-app', autoMessage: false } },
   })
 
   await waitFor(() => host.agent.followups.length > 0, 4000)
@@ -1023,7 +1120,7 @@ await check('im.deliverAutoAdvance=false（老开关）同样只写故事、不�
   const sessionId = 'session-live-aa-legacy-off'
   const host = await bootLiveAutoAdvance({
     sessionId,
-    pluginConfig: { im: { enabled: false, deliverAutoAdvance: false } },
+    pluginConfig: { im: { enabled: true, appId: 'test-app', deliverAutoAdvance: false } },
   })
 
   await waitFor(() => host.agent.followups.length > 0, 4000)
@@ -1037,7 +1134,6 @@ await check('配额用光后，角色答应过的提醒仍然发得出去（承�
   // 自动生活推进现在也占每日名额。若不把「承诺型」从配额闸里放行，
   // 一次忙碌的生活推进就能把当天到点的提醒挤掉——用户等的是那句提醒。
   const sessionId = 'session-quota-promise'
-  writeImIntegration({ conversationKey: 'c2c:USER_QP', sessionId })
   const host = await bootWithPendingIntent({
     sessionId,
     intent: { id: 'i1', summary: '提醒他吃药', reply: '药吃了没', dueInMs: -1000 },

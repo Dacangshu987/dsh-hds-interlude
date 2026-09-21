@@ -441,5 +441,72 @@ await check('自动刷新关掉后不再注册定时器', async () => {
   for (const id of h.timers.ids) h.realClear(id)
 })
 
+await check('IM 通道状态：已连接时如实报告 AppID 与策略', async () => {
+  const h = await mount({
+    ...SAMPLE,
+    channel: {
+      enabled: true, connected: true, started: true,
+      appId: '1905583221', secretRef: 'DSH_QQBOT_APP_SECRET_X', botId: 'qq',
+      sayFallback: 'strict', lastError: null,
+      bindings: 3, inbound: 12, outbound: 8,
+    },
+  })
+  const text = textOf(await settle(h))
+  assert.match(text, /IM 机器人/, '应有 IM 机器人一栏')
+  assert.match(text, /已连接/, '应显示已连接')
+  assert.match(text, /1905583221/, '应显示 AppID')
+  assert.match(text, /strict/, '应显示降级策略')
+  assert.match(text, /3 个会话/, '应显示绑定数')
+  assert.match(text, /收 12 条 \/ 发 8 条/, '应显示收发统计')
+})
+
+await check('IM 通道状态：未启用时给出引导而不是报错', async () => {
+  const h = await mount({ ...SAMPLE, channel: { enabled: false } })
+  const text = textOf(await settle(h))
+  assert.match(text, /未启用/, '应说明通道未启用')
+  assert.match(text, /IM 机器人/, '应指出去哪打开')
+})
+
+await check('IM 通道状态：未连接时说明原因（凭据或 SDK）', async () => {
+  const h = await mount({
+    ...SAMPLE,
+    channel: { enabled: true, connected: false, started: false, appId: '', secretRef: 'DSH_QQBOT_APP_SECRET', lastError: null },
+  })
+  const text = textOf(await settle(h))
+  assert.match(text, /未启动/, '应显示未启动')
+  assert.match(text, /缺 AppID/, 'appId 为空时明确指出')
+})
+
+await check('IM 通道状态：有 lastError 时如实展示', async () => {
+  const h = await mount({
+    ...SAMPLE,
+    channel: { enabled: true, connected: false, started: false, appId: 'x', secretRef: 'DSH_QQBOT_APP_SECRET', lastError: 'AppSecret 未配置' },
+  })
+  const text = textOf(await settle(h))
+  assert.match(text, /AppSecret 未配置/, '应显示具体的失败原因')
+})
+
+await check('压缩版（compact，聊天 Tab 用）只渲染连接状态，不带完整诊断', async () => {
+  const h = await mount({
+    ...SAMPLE,
+    channel: { enabled: true, connected: true, appId: '1905583221', sayFallback: 'strict', bindings: 3, inbound: 12, outbound: 8 },
+  })
+  // 显式传 props 渲染压缩版（settle 不带 props，这里手动做两轮）。
+  h.render(h.View, { compact: true })
+  for (let i = 0; i < 4; i += 1) await new Promise((r) => h.realSet(r, 0))
+  const text = textOf(h.render(h.View, { compact: true }))
+  await new Promise((r) => h.realSet(r, 0))
+
+  assert.match(text, /连接状态/, '压缩版标题应为「连接状态」')
+  assert.match(text, /已连接/, '应显示连接状态')
+  assert.match(text, /1905583221/, '应显示 AppID')
+  assert.match(text, /3 个会话/, '应显示绑定数')
+  assert.match(text, /收 12 条 \/ 发 8 条/, '应显示收发统计')
+  // 压缩版不该带完整诊断卡的内容（统计网格 / 开关芯片 / 下次开口）。
+  assert.doesNotMatch(text, /实时角色会话/, '压缩版不该渲染统计网格')
+  assert.doesNotMatch(text, /下次主动开口/, '压缩版不该渲染下次开口')
+  assert.doesNotMatch(text, /即将到点/, '压缩版不该渲染待办列表')
+})
+
 console.log(`\n只读运行状态视图：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)

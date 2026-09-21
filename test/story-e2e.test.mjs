@@ -57,7 +57,8 @@ function resetFixtures() {
 
 function makeHost() {
   const sent = []
-  const dshIm = { async send(bot, target, text) { sent.push({ bot, target, text }); return { sent: true } } }
+  // 自建通道之后投递走本插件内置通道的出口（分条与记账仍是真实代码路径）。
+  const dshIm = { async send(_bot, target, text) { sent.push({ target, text }); return { sent: true } } }
   const ctx = new Context()
   // agents 用可变引用登记一次即可：后面每个场景换的是它返回的那个 agent。
   let currentAgent
@@ -74,7 +75,8 @@ function makeHost() {
     }),
   })
   ctx.provide('webServer', { register: () => {} })
-  ctx.provide('dshIm', dshIm)
+  ctx.provide('credentials', { resolve: async () => undefined })
+  ctx.__qqImTransport = async (target, text) => dshIm.send('qq_bot', target, text)
   return {
     ctx, sent, dshIm,
     setAgent(agent) { currentAgent = agent },
@@ -115,7 +117,7 @@ async function scenario({ sessionId, reply, binding, canonInjected = true }) {
     timeZone: 'Asia/Shanghai',
     runtime: { restWindows: [], autoAdvanceIntervalMinutes: 5, autoAdvanceJitterMinutes: 0 },
     proactive: { checkIntervalMinutes: 60, graceMinutes: 0 },
-    im: { enabled: false, messageIntervalMinutes: 0 },
+    im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 0 },
   })
   const fiber = host.ctx.plugin(plugin, config)
   if (fiber && typeof fiber.then === 'function') await fiber

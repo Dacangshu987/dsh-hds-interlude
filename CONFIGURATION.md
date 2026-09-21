@@ -197,61 +197,198 @@
 
 ---
 
-## 8. `im`（主动投递到 IM）
+## 8. `im`（聊天软件通道）
+
+> **可视化面板已覆盖本节大部分字段**：设置 → 幕间系统 → **「聊天」Tab**。
+> 面板是四分区结构：**故事**（人设/关系/世界/剧情）、**节奏**（时间/消息节奏/功能开关）、
+> **聊天**（连接状态 + QQ 通道 + 高级选项 + 消息行为）、**预设**（导出）。
+> 「聊天」Tab 里：顶部是**连接状态**（已连/未连、原因、绑定与收发统计），
+> 下面可填通道开关、AppID、凭据引用名、Bot 标识；**降级策略、额度、分条参数
+> 收在「高级选项」里**（默认折叠）；再往下是消息行为开关。
+> 下面的表格是字段的完整语义；面板未暴露的字段（如 `migrateLegacyBindings`、
+> `exposeService`，以及已改为标准功能、只保留配置文件退路的
+> `autoCreateSession`、`group.enabled`）只能写配置文件。
+>
+> **标准功能（面板不再显示）**：以下两项是默认行为，面板里没有开关——
+>
+> - **收到未绑定的 QQ 私聊时自动新建会话并绑定**（`autoCreateSession`，默认 `true`）
+> - **响应群聊消息**（`group.enabled`，默认 `true`；需 QQ 开放平台开通群聊权限；一个群共用一个角色会话）
+>
+> 它们仍可在 `settings.yaml` 里显式关闭（写 `false`）。面板保存时**不会**覆盖这两项——
+> 未显示即不下发，配置沿用你写在文件里的值或 schema 默认值。
+
+### 8.1 通道与凭据
+
+> **扫码绑定**（与 dsh-im 对齐）：设置 → 幕间系统 → 「聊天」Tab → 「扫码绑定」——
+> 手机 QQ 扫一下腾讯官方授权页，AppID 与 AppSecret **自动写入本机凭据服务**，
+> 免去手动去开放平台创建再把密钥贴进来的流程。扫码成功后插件自动更新
+> `im.appId` / `im.enabled` 并重连通道。扫码轮询由插件进程内的
+> `@tencent-connect/qqbot-connector` 完成，二维码约 2–5 分钟有效、过期自动刷新。
+>
+> 依赖（可选）：`@tencent-connect/qqbot-connector`（扫码）、`qrcode`（二维码图片）。
+> 未安装时「扫码绑定」会明确提示组件不可用，不影响手动填写。
 
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `im.enabled` | boolean | `false` | 兼容开关；**不再是投递的必要条件**（见下）。 |
-| `im.botId` | string | `''` | dsh-im 的 Bot ID。 |
-| `im.targetId` | string | `''` | dsh-im 的 Target ID。 |
-| `im.autoDiscover` | boolean | `true` | 自动从 dsh-im 的「会话双向同步」目标里发现本会话的投递目标。 |
-| `im.autoMessage` | boolean | `true` | **故事里角色的发言是否自动发出去**。关掉 = 只写故事、不打扰；到点提醒不受影响。 |
-| `im.messageIntervalMinutes` | number | `120` | **发消息间隔**（分钟）：两次自动发消息之间至少隔多久（分钟）。填 `0` 表示每轮有话就发。写故事不受它限制。 |
-| `im.deliverAutoAdvance` | boolean | `true` | 兼容开关，等价于 `autoMessage`（**两者都开**才会自动发消息）。 |
-| `im.waitForTurnMs` | number | `90000` | 唤起角色后等它写出这段文字的时限。 |
+| `im.enabled` | boolean | `false` | 启用 QQ 通道。配好 `appId` + `secretRef` 后打开即生效。 |
+| `im.appId` | string | `''` | QQ 开放平台 AppID。扫码绑定后自动填入。 |
+| `im.secretRef` | string | `DSH_QQBOT_APP_SECRET` | AppSecret 的**凭据引用**（环境变量名），**不是值本身**。扫码绑定后 AppSecret 写入该名字。 |
+| `im.botId` | string | `qq` | 本通道标识，用于日志与状态展示。 |
+| `im.agentPreset` | string | `''` | 自动新建 QQ 会话时使用的**角色预设 id**。留空则按绑定里的角色名自动匹配同名预设。**没预设的新会话不会注入人设与发言规则，模型不会调 `interlude_say`，于是「收得到消息却永远不回复」**——所以这条很关键。 |
+| `im.cwd` | string | `''` | 自动新建 QQ 会话的**工作目录（workspace）**。DSH 会话列表按 workspace 分组，建在别处的会话不会显示在你当前打开的 workspace 里。留空则跟随最近活跃会话的目录；再拿不到才用宿主默认目录（会记一条警告）。 |
+| `im.markdownSupport` | boolean | `false` | 机器人是否有 markdown 权限。没有就保持 `false`，否则 QQ 侧渲染失败。 |
+| `im.exposeService` | boolean | `false` | 把通道注册为 `dshIm` 服务名（供外部消费者用）。**默认关**——见下。 |
+| `im.logLevel` | enum | `info` | 通道日志级别。 |
+
+#### `im.exposeService` 为什么默认关
+
+本插件自己收发消息**不需要** `dshIm` 这个名字：收靠通道自己的入站监听，
+发靠 `deliverToIm` 直接调用通道。那个名字只是给「外部按 `ctx.get('dshIm')`
+找投递服务」的旧代码留的兼容出口。
+
+而 Cordis 的 `provide` 在服务名被占用时**直接抛错**，且会带崩整个插件树：
+
+```
+service "dshIm" has been registered at <hds-interlude>
+→ 插件树加载失败 → 进程退出
+```
+
+两个插件都注册就变成一场**零和竞速：谁后到谁死**。本插件是**后装的那个**，
+本该让位——所以默认根本不参与这场竞速，两者可以安全共存。
+
+确实需要暴露时打开它，并**先停用 dsh-im**（否则按上面的规则总有一方会崩）。
+
+凭据的值通过 DSH 的凭据服务解析，**不缓存在内存里**——轮换后下一个操作即生效。
+解析顺序：进程环境变量 > `$DSH_HOME/.credentials.yaml` > `.env`。
+
+### 8.2 发言判定（**本插件最重要的一项**）
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `im.sayFallback` | `strict`\|`loose` | `strict` | 见下。 |
+| `im.sayTool` | string | `interlude_say` | 发言工具名。 |
+
+**`strict`（默认）**：模型没调用 `interlude_say` → **什么都不发**。
+正文（故事 / 旁白 / 思考）**从不进入投递链路**，所以泄漏是**结构上不可能**的，
+而不是「判据拦住了」。
+
+代价：模型忘记调工具时角色会静默。这是**可观测、可度量**的——
+用 `/interlude im` 看工具调用统计。
+
+**`loose`（过渡期）**：没有工具调用时，退回从正文按「整行引号」提取，
+再过一道自言自语闸。它让判据重新回到链路上，**只应该短期使用**。
+
+> 交互式回复路径**不受 `sayFallback` 影响**：它只消费 `interlude_say`，
+> 因为那时有用户在等着，模型不调工具就是「这一轮不说」，不该由插件代猜。
+
+### 8.3 入站
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `im.autoCreateSession` | boolean | `true` | 未绑定会话收到私聊时，自动新建 DSH 会话并绑定。**标准功能，面板不显示**；要关只能写配置文件。 |
+| `im.migrateLegacyBindings` | boolean | `true` | 首次启动时**只读**迁移 dsh-im 遗留的绑定关系。 |
+| `im.inboundPrefix` | boolean | `true` | 给注入正文加来源前缀（「来自 QQ」/「来自 QQ 群」）。 |
+| `im.group.enabled` | boolean | `true` | 是否响应群聊消息。**标准功能，面板不显示**（需 QQ 开放平台开通群聊权限）；要关只能写配置文件。**一个群共用一个角色会话**。 |
+| `im.group.mentionOnly` | boolean | `true` | 群聊只响应 **@机器人** 的消息（判定对齐 QQ 平台：`GROUP_AT_MESSAGE_CREATE` 事件 / `mentions[].is_you` / 内容里的 `<@!appId>`）。关掉后群里每条消息都会触发角色，很吵。**此项仍在面板中可改。** |
+| `im.dedupe.ttlMinutes` | number | `10` | 入站去重窗口。 |
+| `im.dedupe.maxEntries` | number | `2000` | 去重表容量上限。 |
+
+> **QQ 群聊适配要点**：群聊支持**默认开启**（`group.enabled` 默认 `true`，标准功能），
+> 群消息以 `group:<群 openid>` 作为会话键，
+> 一个群一个角色会话，群成员共用这个角色；被 @ 的消息会路由进去（`mentionOnly` 门控），
+> 回复走群内被动回复（引用原消息）。机器人命令（`/presetlist` 等）仍仅私聊可用。
+> 注意群聊需要 QQ 开放平台为机器人开通群聊相关权限，否则 SDK 收不到群事件；
+> 未开通权限时群聊功能静默不生效，私聊不受影响。
+>
+> 「被 @」的判定依次是：`GROUP_AT_MESSAGE_CREATE` 事件 → `mentions[].is_you` →
+> 内容里的 `<@!appId>` → **内容以「@角色名」开头**（角色名取绑定 name / bot 别名 /
+> bot 人设名——所以群里发「@江柚 你好」也能触发，即使那只是纯文本不是真提及）。
+
+> **为什么要去重**：腾讯 SDK 明确警告「重连可能导致同一条消息重复回调」。
+> 不按 `messageId` 幂等的话，网络抖一次用户就会看到角色把同一句话回两遍。
+
+### 8.4 出站与交互式回复
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `im.interactive.enabled` | boolean | `true` | 本轮的 `interlude_say` 是否回到 QQ。 |
+| `im.interactive.requireInbound` | boolean | `true` | 仅当该 QQ 会话发过消息时才回投。 |
+| `im.interactive.replyWindowMinutes` | number | `30` | 入站消息在此窗口内走**被动回复**（省主动额度）。 |
+| `im.proactive.maxPerDay` | number | `30` | 每天主动消息上限（QQ 平台硬限制）。 |
+| `im.proactive.minIntervalMinutes` | number | `1` | 两次主动消息之间的最小间隔。 |
 | `im.timeoutMs` | number | `15000` | 单条消息投递超时。 |
-| `im.keepPassive` | boolean | `false` | 投递失败时是否退化为一次普通本地唤起。 |
 | `im.chunking.enabled` | boolean | `true` | 按真人发消息的方式分条。 |
 | `im.chunking.maxChars` | number | `40` | 单条最大字数。 |
-| `im.chunking.maxMessages` | number | `4` | 一次最多分几条。 |
+| `im.chunking.maxMessages` | number | `4` | 一次最多分几条（超出合并，**不丢内容**）。 |
 | `im.chunking.minIntervalMs` | number | `400` | 两条之间的间隔。 |
 
-### 投递目标是怎么定的
+> **`requireInbound` 为什么要开**：不开的话，你在 DSH 界面里跟角色的私聊
+> 会被莫名其妙发到 QQ。开着它就只在「对话确实发生在 QQ 里」时回投。
 
-三层优先级，前一层没有才看后一层：
+### 8.5 故事节奏（与既有行为一致）
 
-1. **会话级绑定** —— 在该会话里执行 `/interlude im bind <botId> <targetId>`；
-2. **插件配置** —— 上面的 `im.botId` / `im.targetId`；
-3. **自动发现** —— 从 `$DSH_HOME/integrations/dsh-<channel>/` 反查。
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `im.autoMessage` | boolean | `true` | 故事里角色的发言是否自动发出去。关掉 = 只写故事、不打扰；到点提醒不受影响。 |
+| `im.messageIntervalMinutes` | number | `120` | **发消息间隔**：两次自动发消息之间至少隔多久。写故事不受它限制。 |
+| `im.deliverAutoAdvance` | boolean | `true` | 兼容开关，等价于 `autoMessage`（**两者都开**才会自动发消息）。 |
+| `im.waitForTurnMs` | number | `90000` | 唤起角色后等它写出这段文字的时限。 |
+| `im.keepPassive` | boolean | `false` | 投递失败时是否退化为一次普通本地唤起。 |
 
-自动发现是默认路径，也是**最不容易出错**的一条：dsh-im 的「会话双向同步」
-本来就把 `conversationKey` 绑到了会话上，插件只是把它读出来，因而长期有效、
-不需要人工维护。三层都没有时，主动开口仍会唤起角色，只是写出来的话留在
-DSH 里、回不到聊天软件——用 `im.keepPassive` 可以改成「至少在本地留一条」。
+### 8.6 投递目标是怎么定的
 
-> **`im.enabled` 为什么不再是必要条件**：dsh-im 的会话同步只推送「用户在 DSH
-> 里发起的回合」。主动回合的文本根本不会进 IM，必须由插件自己取出来直投。
-> 早期实现要求先手工 `im bind` 且打开 `im.enabled`，于是任何一次忘记配置都会让
-> 主动开口在聊天窗口里静默消失——那正是「不主动回复」的根因。
+**两层**优先级（自建通道之后从三层收敛为两层，「自动发现」现在是查自己的绑定表）：
 
-### 哪些话会走到聊天软件
+1. **会话级绑定** —— `/interlude im bind <openid> [sessionId]`；
+2. **绑定表** —— `$DSH_HOME/integrations/dsh-qq-im/bindings.json`。
 
-判断依据有两条，**都满足**才发：
+绑定表由**你自己**维护，不再借用 dsh-im 的 `sessionSync`。这是本次改造的关键：
+那份数据的存在本身就是开关，关掉镜像会连绑定一起 `delete`——两件无关的事被耦合
+在一个字段上，导致「要么忍受泄漏，要么失去主动投递」的死结。
 
-1. **这个会话有没有绑定**（`bindingFor`）。有绑定就说明这个会话本来就是在聊天软件里
-   收发的，角色写出来的话就该回到那里去；
-2. **角色这一轮有没有真的说话**（`lib/story.js` 的台词提取）。
+绑定通常是**自动建立**的：在 QQ 里给机器人发一条私聊即可（默认
+`autoCreateSession: true`）。从 dsh-im 迁过来的用户，首次启动会自动导入旧绑定。
+
+### 8.7 哪些话会走到聊天软件
 
 | 触发 | 有绑定的会话 | 没有绑定的 Web 会话 |
 | --- | --- | --- |
-| 到点提醒 / 承诺回访 | 直投 IM（**不受发消息间隔限制**——那是答应过的事） | 本地唤起，话留在会话里 |
-| 故事续写里角色说了话 | 直投 IM，但受「发消息间隔」与每日配额约束 | 不会发（没有收件人） |
-| 故事续写里只有旁白 | **一个字都不发**，故事留在 DSH 里 | 同上 |
+| 到点提醒 / 承诺回访 | 直投 QQ（**不受发消息间隔限制**——那是答应过的事） | 本地唤起，话留在会话里 |
+| 故事续写里调了 `interlude_say` | 直投 QQ，受「发消息间隔」与每日配额约束 | 不会发（没有收件人） |
+| 故事续写里只有正文 | **一个字都不发**，故事留在 DSH 里 | 同上 |
+| 你在 DSH 界面说话，角色调了 `interlude_say` | 回到 QQ（受 `interactive` 约束） | 不会发 |
 
 投递成功会占掉一个主动联系名额（`proactive.maxPerDay`，默认 6），承诺型待办在
 `handleProactive` 里先结算，所以配额永远优先给角色答应过的事。
 
 **只有真的发出去了**才推进「发消息间隔」的水位：投递失败不该让用户白等两小时。
 
-查看当前状态：`/interlude im`；列出发现结果：`/interlude im discover`；
-试投一条：`/interlude im test`。
+### 8.8 自检命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `/interlude im` | 绑定、通道状态、降级策略、投递统计 |
+| `/interlude im targets` | 列出本通道的绑定关系 |
+| `/interlude im bind <openid>` | 手工绑定当前会话 |
+| `/interlude im unbind` | 解除本会话绑定 |
+| `/interlude im test [文案]` | 试投一条（`\|` 分隔多条） |
+| `/interlude im reconnect` | 重连 |
+| `/interlude im discover` | 列出绑定表并说明如何自动建立 |
+
+### 8.9 QQ 用户端命令（在 QQ 私聊发给机器人，不进模型）
+
+单行、以 `/` 开头、**私聊**时拦截，由插件直接处理并回投结果。
+**群聊不响应命令**（避免群内命令刷屏与误触发；被 @ 的普通消息照常进角色会话）。
+
+| 命令 | 作用 |
+| --- | --- |
+| `/help` | 显示全部可用命令 |
+| `/status` | 查看连接与当前绑定状态 |
+| `/new` | 开启一个全新会话（解绑 → 新建 → 绑回） |
+| `/sessionlist` | 列出可绑定的会话 |
+| `/session <ID\|序号>` | 把当前聊天绑到指定会话 |
+| `/presetlist` | 列出可切换的角色预设（带序号） |
+| `/preset <ID\|序号\|角色名>` | **切换角色预设**：用该预设**新建一个会话**并接管当前聊天（绑定名 = 新角色名）。切换后旧会话仍保留，随时可用 `/session` 绑回 |
+
+> `/preset` 的可用预设来自 `presets.json` 里已落盘的 roleplay 预设（含「创作」页保存的
+> `preset-hds-*`）。切换只改当前聊天的绑定，不改 `im.bots[].agentPreset` 全局默认。

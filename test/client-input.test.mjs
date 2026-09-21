@@ -25,6 +25,8 @@ function createHarness() {
   let hooks = []
   let pendingEffects = []
   let index = 0
+  /** 挂载期首次渲染的 hook 总数（React #310 的检测基线）。 */
+  let firstCount = null
 
   const react = {
     useState(init) {
@@ -51,11 +53,25 @@ function createHarness() {
     },
   }
 
+  /**
+   * 每次渲染结束后调用：校验 hook 数量在挂载期内稳定。
+   * 真实 React 在 hook 数量变化时抛 #310（设置页直接白屏），
+   * 这套替身不会自动报，所以显式检验——把「hook 放在早退分支之后」这类
+   * 结构错误当场抓出来。
+   */
+  const endRender = () => {
+    if (firstCount === null) firstCount = index
+    else if (index !== firstCount) {
+      throw new Error(`hook 数量变化：首次 ${firstCount}，本次 ${index} —— hook 被放在了条件/早退分支之后？`)
+    }
+  }
+
   return {
     react,
     beginRender: () => { index = 0 },
+    endRender,
     /** 重新挂载：清空 hook 槽，等价于 React 里卸载再挂载一个新实例。 */
-    unmount: () => { hooks = []; pendingEffects = []; index = 0 },
+    unmount: () => { hooks = []; pendingEffects = []; index = 0; firstCount = null },
     takeEffects: () => pendingEffects.splice(0),
   }
 }
@@ -157,11 +173,11 @@ async function mount(initialValue = {}) {
   server.posted = null
   harness.unmount()          // 每个用例都是一个全新的组件实例
   harness.beginRender()
-  Card()
+  renderCard()
   for (const fn of harness.takeEffects()) fn()
   await flush()
   harness.beginRender()
-  return Card()
+  return renderCard()
 }
 
 /** 模拟「保存后重新打开面板」：拿宿主里存下来的合并结果重新挂载。 */
@@ -169,17 +185,35 @@ async function reopen() {
   const saved = mergeLayers(server.value, server.userSection)
   harness.unmount()
   harness.beginRender()
-  Card()
+  renderCard()
   server.value = saved
   server.userSection = {}
   for (const fn of harness.takeEffects()) fn()
   await flush()
   harness.beginRender()
-  return Card()
+  return renderCard()
 }
 
-const rerender = () => { harness.beginRender(); return Card() }
+/**
+ * 渲染并校验 hook 数量稳定。
+ * 为什么必须经这里：真实 React 在 hook 数量变化时抛 #310（设置页白屏），
+ * 替身不会自动报；endRender 把这条 invariant 变成显式断言。
+ */
+const renderCard = () => {
+  const t = Card()
+  harness.endRender()
+  return t
+}
+const rerender = () => { harness.beginRender(); return renderCard() }
 const save = async (tree) => { buttonByText(tree, '保存').props.onClick(); await flush() }
+
+/** 切到指定 Tab（面板现在是分区结构；时区/间隔/开关在「节奏」页，IM 在「聊天」页）。 */
+function switchTab(tree, label) {
+  const btn = all(tree).find(el => el.tag === 'button' && textOf(el) === label)
+  assert.ok(btn, `找不到「${label}」Tab`)
+  btn.props.onClick()
+  return rerender()
+}
 
 let passed = 0
 let failed = 0
@@ -316,6 +350,7 @@ await check('同一帧里改两个标量（时区 + 间隔），两处都要留�
   // scalar 是独立的一份状态，同样会被批处理：两次 updateScalar 若都基于渲染快照，
   // 第二次会把第一次整个覆盖掉。
   let tree = await mount({})
+  tree = switchTab(tree, '节奏')
   const tz = byPlaceholder(tree, 'Asia/Shanghai')
   const num = all(tree).find(el => el.props && el.props.type === 'number')
   assert.ok(tz && num, '找不到时区/数字输入框')
@@ -333,6 +368,7 @@ console.log('\n面板输入：数字与开关')
 
 await check('间隔提示填 0 不该被悄悄改成 30', async () => {
   let tree = await mount({})
+  tree = switchTab(tree, '节奏')
   const box = byPlaceholder(tree, undefined) && all(tree).find(el => el.props && el.props.type === 'number')
   assert.ok(box, '找不到数字输入框')
   type(box, '0')
@@ -343,7 +379,8 @@ await check('间隔提示填 0 不该被悄悄改成 30', async () => {
 
 await check('开关能独立切换且落在正确的键上', async () => {
   let tree = await mount({})
-  // 勾上「每回合都注入当前时间」
+  tree = switchTab(tree, '节奏')
+  // 勾上「每回合都注入当前时间」（「节奏」页的第一个复选框）
   const toggle = all(tree).find(el => el.tag === 'input' && el.props.type === 'checkbox')
   assert.ok(toggle, '找不到复选框')
   toggle.props.onChange({ target: { checked: true } })
@@ -370,6 +407,7 @@ function numberBoxByLabel(tree, labelText) {
 
 await check('写故事间隔能改，并落在 runtime.autoAdvanceIntervalMinutes', async () => {
   let tree = await mount({})
+  tree = switchTab(tree, '节奏')
   type(numberBoxByLabel(tree, '写故事间隔（分钟）'), '25')
   tree = rerender()
   await save(tree)
@@ -380,6 +418,7 @@ await check('发消息间隔填 0 不该被悄悄改成 120（0 = 每轮有话�
   // 与「间隔提示填 0」同一个坑：`Number('0') || 120` 会把明确的 0 改成默认值，
   // 用户想恢复「有话就发」的旧节奏却怎么填都没用。
   let tree = await mount({})
+  tree = switchTab(tree, '节奏')
   type(numberBoxByLabel(tree, '发消息间隔（分钟）'), '0')
   tree = rerender()
   await save(tree)
@@ -388,6 +427,7 @@ await check('发消息间隔填 0 不该被悄悄改成 120（0 = 每轮有话�
 
 await check('发消息间隔能改，并落在 im.messageIntervalMinutes', async () => {
   let tree = await mount({})
+  tree = switchTab(tree, '节奏')
   type(numberBoxByLabel(tree, '发消息间隔（分钟）'), '180')
   tree = rerender()
   await save(tree)
@@ -396,6 +436,7 @@ await check('发消息间隔能改，并落在 im.messageIntervalMinutes', async
 
 await check('「故事里角色的发言自动发出去」关掉后落在 im.autoMessage', async () => {
   let tree = await mount({})
+  tree = switchTab(tree, '节奏')
   const label = all(tree).find(el => el.tag === 'span' && /故事里角色的发言自动发出去/.test(textOf(el)))
   assert.ok(label, '找不到这个开关')
   const row = all(tree).find(el => {
@@ -413,7 +454,8 @@ await check('「故事里角色的发言自动发出去」关掉后落在 im.aut
 
 await check('老配置 deliverAutoAdvance=false 时，面板开关如实显示为关', async () => {
   // 兼容开关与新开关是「都开才开」。面板若不把它算进去，老用户会看到开着却收不到消息。
-  const tree = await mount({ im: { autoMessage: true, deliverAutoAdvance: false } })
+  let tree = await mount({ im: { autoMessage: true, deliverAutoAdvance: false } })
+  tree = switchTab(tree, '节奏')
   const label = all(tree).find(el => el.tag === 'span' && /故事里角色的发言自动发出去/.test(textOf(el)))
   const row = all(tree).find(el => {
     const kids = el.props && el.props.children

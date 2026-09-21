@@ -22,9 +22,12 @@ process.env.DSH_HOME = TEST_HOME
 
 let passed = 0
 let failed = 0
-const check = async (label, fn) => {
+const check = async (label, fn, timeoutMs = 30000) => {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`TIMEOUT: "${label}" 超过 ${timeoutMs}ms`)), timeoutMs)
+  );
   try {
-    await fn()
+    await Promise.race([fn(), timeout]);
     passed += 1
     console.log(`  ok  ${label}`)
   } catch (error) {
@@ -226,13 +229,14 @@ function fakeSettings() {
 }
 
 const sent = []
-const dshIm = {
-  async send(botId, targetId, text, options) {
-    sent.push({ botId, targetId, text, hasSignal: Boolean(options?.signal) })
-    return { sent: true }
-  },
-  // 默认没有 listBots/listTargets：与真实 dsh-im 的旧版本一致，
-  // 用来验证「服务能力不全」时插件能给出明确提示而不是崩掉。
+// 自建通道之后没有外部 dshIm 服务了——通道是本插件自己装的。
+// 这里注入它的**投递出口**：分条、逐条确认、失败记账全走真实代码路径，
+// 只有最后那一跳被替换掉。所以下面测的仍是真行为。
+let transportFails = false
+const transport = async (targetId, text, options) => {
+  if (transportFails) { const error = new Error('boom'); error.code = 'delivery-failed'; throw error }
+  sent.push({ targetId, text, hasSignal: Boolean(options?.signal) })
+  return { sent: true }
 }
 // followup 记录被唤起的提示词，供断言「主动回合确实被发起」。
 const followups = []
@@ -244,9 +248,16 @@ ctx.provide('tools', { register: def => (captured.tools.push(def), () => {}) })
 ctx.provide('commands', { register: def => (captured.commands.push(def), () => {}) })
 ctx.provide('settings', settings)
 ctx.provide('webServer', { register: () => {} })
-ctx.provide('dshIm', dshIm)
+ctx.provide('credentials', { resolve: async () => undefined })
+ctx.__qqImTransport = transport
 
-const config = plugin.Config({ timeZone: 'Asia/Shanghai', im: { enabled: true, botId: 'qq_bot', targetId: 'jiangyou' } })
+// 配置里同时给出：
+//   - im.botId / im.targetId（旧式手工绑定，仍然支持）
+//   - im.appId（自建通道把它当作「通道可用」的前提）
+const config = plugin.Config({
+  timeZone: 'Asia/Shanghai',
+  im: { enabled: true, appId: 'test-app', botId: 'qq_bot', targetId: 'jiangyou' },
+})
 const fiber = ctx.plugin(plugin, config)
 if (fiber && typeof fiber.then === 'function') await fiber
 await sleep(30)
@@ -264,7 +275,9 @@ await check('/interlude im 显示绑定与投递服务状态', async () => {
   assert.equal(result.kind, 'success')
   assert.ok(result.text.includes('qq_bot'), result.text)
   assert.ok(result.text.includes('jiangyou'), result.text)
-  assert.ok(result.text.includes('可用'), result.text)
+  // 自建通道之后状态行的重点是「通道起没起」与「降级策略」，
+  // 而不是 dsh-im 那个外部服务的可用性。
+  assert.ok(result.text.includes('通道'), result.text)
 })
 
 await check('规则段随 im.enabled 打开而注入 IM 说话方式', async () => {
@@ -294,7 +307,6 @@ await check('/interlude im test 按一条一条发出，且旁白不入消息', 
   assert.ok(result.text.includes('已投递'), result.text)
   assert.ok(sent.length >= 2, `应发出多条，实际 ${sent.length}`)
   for (const item of sent) {
-    assert.equal(item.botId, 'qq_bot')
     assert.equal(item.targetId, 'jiangyou')
     assert.ok(!item.text.includes('（'), `漏出旁白：${item.text}`)
     assert.ok(item.text.length <= 40, `单条过长：${item.text}`)
@@ -331,14 +343,13 @@ await check('未绑定目标时 im test 明确报错而不是静默失败', asyn
 })
 
 await check('投递失败时 im test 返回错误并如实报告', async () => {
-  const original = dshIm.send
-  dshIm.send = async () => { const error = new Error('boom'); error.code = 'delivery-failed'; throw error }
+  transportFails = true
   try {
     const result = await command(' im test 试一下')
     assert.equal(result.kind, 'error', result.text)
     assert.ok(result.text.includes('delivery-failed'), result.text)
   } finally {
-    dshIm.send = original
+    transportFails = false
   }
 })
 
@@ -353,7 +364,6 @@ await check('im bind 覆盖配置绑定并持久化到会话状态', async () =>
 
   sent.length = 0
   await command(' im test 你好', agent)
-  assert.equal(sent[0].botId, 'qq_other')
   assert.equal(sent[0].targetId, '另一个目标')
 })
 
@@ -375,7 +385,7 @@ await check('未知子命令的提示里包含 im', async () => {
   assert.ok(result.text.includes('im'), result.text)
 })
 
-await check('dsh-im 不可用时 im 状态如实报告且 test 报错', async () => {
+await check('通道未配 appId 时 im 状态如实报告、test 报错（不再是「dsh-im 未加载」）', async () => {
   const bare = new Context()
   const bareCaptured = { sections: [], tools: [], commands: [] }
   bare.provide('agents', { currentInitiator: () => undefined })
@@ -384,6 +394,8 @@ await check('dsh-im 不可用时 im 状态如实报告且 test 报错', async ()
   bare.provide('commands', { register: def => (bareCaptured.commands.push(def), () => {}) })
   bare.provide('settings', fakeSettings())
   bare.provide('webServer', { register: () => {} })
+  bare.provide('credentials', { resolve: async () => undefined })
+  // 刻意不给 appId，也不注入 transport：通道启动不起来。
   const bareFiber = bare.plugin(plugin, plugin.Config({ timeZone: 'Asia/Shanghai', im: { enabled: true, botId: 'b', targetId: 't' } }))
   if (bareFiber && typeof bareFiber.then === 'function') await bareFiber
   await sleep(20)
@@ -391,70 +403,66 @@ await check('dsh-im 不可用时 im 状态如实报告且 test 报错', async ()
   const bareHandler = bareCaptured.commands[0].handler
   const run = rawInput => bareHandler({ agent: fakeAgent('bare'), rawInput, attachments: [], signal: new AbortController().signal })
 
+  // 状态行要如实说「未启动」，并指出缺的是 appId——这行是用户唯一的自检窗口。
   const status = await run(' im')
-  assert.ok(status.text.includes('不可用'), status.text)
+  assert.ok(status.text.includes('未启动'), status.text)
+  assert.ok(status.text.includes('AppID'), status.text)
+
+  // 投递要如实失败，且错误码是通道自己的（不再是 dsh-im-unavailable）。
   const tested = await run(' im test 在吗')
   assert.equal(tested.kind, 'error', tested.text)
-  assert.ok(tested.text.includes('dsh-im-unavailable'), tested.text)
+  assert.ok(tested.text.includes('im-unavailable'), tested.text)
   await bare.stop?.()
 })
 
-await check('im targets 列出可用 Bot 与目标，便于绑定', async () => {
-  dshIm.listBots = async () => ['qq_bot', 'weixin_bot']
-  dshIm.listTargets = async botId => (botId === 'qq_bot'
-    ? [{ targetId: 'jiangyou', kind: 'user', name: '江柚', route: { userOpenId: '4DDB1DAE' } }]
-    : [])
-  try {
-    const result = await command(' im targets')
-    assert.equal(result.kind, 'success', result.text)
-    assert.ok(result.text.includes('qq_bot'), result.text)
-    assert.ok(result.text.includes('jiangyou'), result.text)
-    assert.ok(result.text.includes('4DDB1DAE'), result.text)
-    assert.ok(result.text.includes('im bind'), result.text)
-  } finally {
-    delete dshIm.listBots
-    delete dshIm.listTargets
-  }
-})
-
-await check('没有 Bot 时 im targets 给出下一步指引', async () => {
-  dshIm.listBots = async () => []
-  dshIm.listTargets = async () => []
-  try {
-    const result = await command(' im targets')
-    assert.equal(result.kind, 'success', result.text)
-    assert.ok(result.text.includes('IM机器人'), result.text)
-  } finally {
-    delete dshIm.listBots
-    delete dshIm.listTargets
-  }
-})
-
-await check('dsh-im 未暴露列举接口时 im targets 如实说明', async () => {
+await check('im targets 列出本通道的绑定关系', async () => {
+  // 自建通道的「目标」就是它自己的绑定表——不再问外部服务的 Bot 列表。
   const result = await command(' im targets')
-  assert.equal(result.kind, 'error', result.text)
-  assert.ok(result.text.includes('listBots'), result.text)
+  assert.equal(result.kind, 'success', result.text)
+  // 配置里手工给了 botId/targetId，通道的 listBots 应当把它报出来。
+  assert.ok(result.text.includes('qq_bot'), result.text)
+  assert.ok(result.text.includes('Bot'), result.text)
 })
 
-await check('im targets 在 dsh-im 未加载时明确报错', async () => {
-  const bare = new Context()
-  const bareCaptured = { sections: [], tools: [], commands: [] }
-  bare.provide('agents', { currentInitiator: () => undefined })
-  bare.provide('systemPrompt', { section: spec => (bareCaptured.sections.push(spec), () => {}) })
-  bare.provide('tools', { register: def => (bareCaptured.tools.push(def), () => {}) })
-  bare.provide('commands', { register: def => (bareCaptured.commands.push(def), () => {}) })
-  bare.provide('settings', fakeSettings())
-  bare.provide('webServer', { register: () => {} })
-  const bareFiber = bare.plugin(plugin, plugin.Config({ timeZone: 'Asia/Shanghai', im: { enabled: true } }))
-  if (bareFiber && typeof bareFiber.then === 'function') await bareFiber
-  await sleep(20)
+await check('im discover 列出绑定表，并说明如何自动建立', async () => {
+  const result = await command(' im discover')
+  assert.equal(result.kind, 'success', result.text)
+  // 没有任何绑定时的引导文案。
+  assert.ok(result.text.includes('绑定'), result.text)
+})
 
-  const result = await bareCaptured.commands[0].handler({
-    agent: fakeAgent('bare-targets'), rawInput: ' im targets', attachments: [], signal: new AbortController().signal,
-  })
+await check('im status 报告降级策略（本插件最重要的自检项）', async () => {
+  const result = await command(' im')
+  assert.equal(result.kind, 'success', result.text)
+  assert.ok(result.text.includes('strict'), result.text)
+  // 必须把「不调工具就不外发」这个后果讲清楚，否则用户看到角色沉默会以为是坏了。
+  assert.ok(result.text.includes('interlude_say'), result.text)
+})
+
+await check('im reconnect 重启通道并如实回报状态', async () => {
+  const result = await command(' im reconnect')
+  assert.equal(result.kind, 'success', result.text)
+  assert.ok(result.text.includes('IM 通道'), result.text)
+})
+
+await check('im rebind：把当前会话设为该 QQ 私聊的投递目标（修「会话不显示」）', async () => {
+  // 线上场景：旧绑定指向一个看不见的旧会话。在用户正打开的会话里
+  // 执行 im rebind，把投递目标改到本会话——不必手删 bindings.json。
+  const result = await command(' im rebind c2c:4DDB1DAECE915EF43E97783A7463F0A3')
+  assert.equal(result.kind, 'success', result.text)
+  assert.ok(result.text.includes('已把 c2c:4DDB1DAECE915EF43E97783A7463F0A3'), result.text)
+
+  // 再查一次绑定表，确认目标已改到本会话。
+  const after = await command(' im discover')
+  assert.equal(after.kind, 'success', after.text)
+  assert.ok(after.text.includes('c2c:4DDB1DAECE915EF43E97783A7463F0A3'), after.text)
+})
+
+await check('im rebind 缺目标且当前无绑定时报用法', async () => {
+  // 用一个新的假会话（没有绑定），不带参数应当提示用法。
+  const result = await command(' im rebind', fakeAgent('im-rebind-nobinding'))
   assert.equal(result.kind, 'error', result.text)
-  assert.ok(result.text.includes('dsh-im 未加载'), result.text)
-  await bare.stop?.()
+  assert.ok(result.text.includes('用法'), result.text)
 })
 
 console.log('到期待办的过期与合并')
