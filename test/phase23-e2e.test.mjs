@@ -43,6 +43,7 @@ async function boot({ events = [], statePatch = {}, keepState = false } = {}) {
   // 默认清盘——多数用例需要一个干净的起点，残留会串台。
   if (!keepState) fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
   const registered = new Map()
+  const registeredCommands = new Map()
   const agent = {
     id: SESSION,
     session: {
@@ -56,7 +57,7 @@ async function boot({ events = [], statePatch = {}, keepState = false } = {}) {
   ctx.provide('agents', { get: () => agent, currentInitiator: () => undefined })
   ctx.provide('systemPrompt', { section: () => () => {} })
   ctx.provide('tools', { register: t => { registered.set(t.name, t); return () => {} } })
-  ctx.provide('commands', { register: () => () => {} })
+  ctx.provide('commands', { register: c => { registeredCommands.set(c.name, c); return () => {} } })
   ctx.provide('settings', {
     register: (ns, schema, options) => ({
       get: () => schema(options?.base ?? {}),
@@ -82,13 +83,20 @@ async function boot({ events = [], statePatch = {}, keepState = false } = {}) {
   if (fiber && typeof fiber.then === 'function') await fiber
 
   const exec = { agent }
+  /** 跑一次 `/interlude <verb>`，把回复文本取出来。 */
+  const runCommand = async verb => {
+    const command = registeredCommands.get('interlude')
+    if (!command) return ''
+    const result = await command.handler({ rawInput: verb, agent, session: agent.session })
+    return typeof result === 'string' ? result : (result?.text ?? JSON.stringify(result ?? ''))
+  }
   const runPreStep = async () => {
     const decision = await ctx.waterfall?.('agent/pre-step',
       { agent, messages: [], turn: 2, step: 1, signal: new AbortController().signal },
       async () => ({ kind: 'enter', messages: [] }))
     return decision ? decision.messages.map(m => m.content.map(b => b.text).join('')).join('\n') : ''
   }
-  return { ctx, registered, exec, state, runPreStep }
+  return { ctx, registered, exec, state, runPreStep, runCommand }
 }
 
 const USER_EVENT = text => ({ type: 'user/message', time: 1_700_000_000_000, data: { content: [{ type: 'text', text }] } })
@@ -428,6 +436,46 @@ await check('长期记忆：没有事实时不在幕间块里留占位', async (
   const { ctx, runPreStep } = await boot({ events })
   const injected = await runPreStep()
   assert.doesNotMatch(injected, /长期记忆/, `没有事实时不该出现该段：\n${injected}`)
+  await ctx.stop?.()
+})
+
+/* ============================ ⑦ 退避 / 熔断 ============================ */
+
+await check('熔断状态落盘并读回（DSH 重启后不会重新烧 token）', async () => {
+  const events = [SCRIPT_EVENT('（她想了想。）')]
+  const { ctx, runPreStep } = await boot({ events })
+  await runPreStep()
+
+  // 造 6 次连续失败 → 熔断
+  const state = loadState(SESSION)
+  const { recordDirectorFailure, createTimelineGuard } = await import('../lib/timeline-guard.js')
+  state.timelineGuard = createTimelineGuard()
+  for (let i = 0; i < 6; i++) recordDirectorFailure(state.timelineGuard, { now: 1000, from: 0 })
+  saveState(SESSION, state)
+  await ctx.stop?.()
+
+  const back = loadState(SESSION)
+  assert.equal(back.timelineGuard.failures, 6, '失败计数必须落盘')
+  assert.ok(back.timelineGuard.backoff, '退避时间必须落盘')
+})
+
+await check('/interlude context 能看到账本与熔断状态', async () => {
+  const events = [USER_EVENT('在吗'), SAY_EVENT('在的')]
+  const { ctx, runPreStep, runCommand } = await boot({ events })
+  await runPreStep()
+  const out = await runCommand('context')
+  assert.match(out, /条目账本/, `应展示账本概览：\n${out}`)
+  assert.match(out, /user-message|character-message/, `应展示最近条目类型：\n${out}`)
+  await ctx.stop?.()
+})
+
+await check('续写书签：注入里要求「不要重述」且只给指针', async () => {
+  const events = [USER_EVENT('在吗'), SCRIPT_EVENT('（她放下手机，走到窗边。）')]
+  const { ctx, runPreStep } = await boot({ events })
+  await runPreStep()
+  const injected = await runPreStep()
+  assert.match(injected, /续写位置/, `应注入续写书签：\n${injected}`)
+  assert.match(injected, /不要重述/, '应明确要求不要重述')
   await ctx.stop?.()
 })
 
