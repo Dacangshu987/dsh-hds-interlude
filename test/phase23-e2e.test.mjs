@@ -38,8 +38,10 @@ const check = async (label, fn) => {
 console.log('Phase 2/3 端到端')
 
 /** 起一个真插件实例。events 会作为会话日志（供记账）。 */
-async function boot({ events = [], statePatch = {} } = {}) {
-  fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
+async function boot({ events = [], statePatch = {}, keepState = false } = {}) {
+  // keepState：保留上一次写下的状态文件，用于「盘上的事实能否被读回来」这类用例。
+  // 默认清盘——多数用例需要一个干净的起点，残留会串台。
+  if (!keepState) fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
   const registered = new Map()
   const agent = {
     id: SESSION,
@@ -67,7 +69,10 @@ async function boot({ events = [], statePatch = {} } = {}) {
   ctx.provide('credentials', { resolve: async () => undefined })
   ctx.provide('sessionController', { async resolveAgent() { return agent } })
 
-  const state = emptyState()
+  // keepState 时基于**盘上已有的**状态继续，而不是把它覆盖成一份新的空状态。
+  // 踩过的坑：这里无条件 `saveState(new emptyState())`，于是上一个用例写下的
+  // facts 立刻被抹掉，「重开读回事实」的用例永远看不到它们（假红）。
+  const state = keepState ? loadState(SESSION) : emptyState()
   state.canonInjected = true
   state.roleplay = true
   Object.assign(state, statePatch)
@@ -337,6 +342,92 @@ await check('活跃剧情余波：注入进幕间块；已过期的余波不注�
   const injected = await runPreStep()
   assert.match(injected, /昨天的争执/, '生效中的余波应注入')
   assert.doesNotMatch(injected, /已经过去的事/, '过期的余波不该注入')
+  await ctx.stop?.()
+})
+
+/* ============================ ⑥ 长期记忆注入 ============================ */
+
+await check('长期记忆：写入的 facts 真的出现在注入给模型的幕间块里', async () => {
+  // 回归：在这之前 facts **从来没进过提示词**——只有人工 /interlude context
+  // 能看见，模型全程不知情。那等于「记了但没人看」。
+  const events = [USER_EVENT('最近怎么样'), SCRIPT_EVENT('（她想了想。）')]
+  const { ctx, registered, exec, runPreStep } = await boot({ events })
+  await runPreStep()
+
+  const memory = registered.get('interlude_memory')
+  await memory.execute({ action: 'add', scope: 'promise', content: '约好周末一起去看展' }, exec)
+
+  const injected = await runPreStep()
+  assert.match(injected, /长期记忆/, `应注入长期记忆段，实际：\n${injected}`)
+  assert.match(injected, /约好周末一起去看展/, `事实内容应在注入里，实际：\n${injected}`)
+  await ctx.stop?.()
+})
+
+await check('长期记忆：**她的解读**在提示词里被显式标注（核心防线）', async () => {
+  const events = [USER_EVENT('在吗'), SCRIPT_EVENT('（她放下手机。）')]
+  const { ctx, runPreStep } = await boot({ events })
+  await runPreStep()
+
+  // 直接造两条不同认知模式的事实，验渲染口径。
+  const state = loadState(SESSION)
+  state.facts.push({
+    id: 'f-belief', scope: 'general', content: '他好像不太高兴',
+    status: 'active', importance: 0.9, confidence: 0.9,
+    knowledge: { mode: 'belief', clauses: [], relatedFactIds: [] },
+  })
+  state.facts.push({
+    id: 'f-confirmed', scope: 'promise', content: '约好周末见面',
+    status: 'active', importance: 0.9, confidence: 0.9,
+    knowledge: { mode: 'confirmed', clauses: [], relatedFactIds: [] },
+  })
+  // 只改盘上的 facts 不够——插件持有的是内存里的那份 state。
+  // 所以带着盘上的状态**重开一次**，让它读回来（keepState 保留刚才写的文件）。
+  saveState(SESSION, state)
+  await ctx.stop?.()
+
+  const { ctx: ctx2, runPreStep: run2 } = await boot({ events, keepState: true })
+  const injected = await run2()
+  const beliefLine = injected.split('\n').find(l => l.includes('他好像不太高兴'))
+  const confirmedLine = injected.split('\n').find(l => l.includes('约好周末见面'))
+  assert.ok(beliefLine, `解读那条应出现：\n${injected}`)
+  assert.ok(confirmedLine, `已确认那条应出现：\n${injected}`)
+  assert.match(beliefLine, /她的解读|未获对方确认/, '解读必须被标注，不能与事实平铺')
+  assert.doesNotMatch(confirmedLine, /解读/, '已确认的不该带解读前缀')
+  await ctx2.stop?.()
+})
+
+await check('长期记忆：相关的那条会被捞到前面（词法召回接线）', async () => {
+  const events = [USER_EVENT('公园那边怎么样'), SCRIPT_EVENT('（她想了想。）')]
+  const { ctx, runPreStep } = await boot({ events })
+  await runPreStep()
+  const state = loadState(SESSION)
+  // 一条很重要但无关，一条次要但正中当下话题。
+  state.facts.push({
+    id: 'f-important', scope: 'general', content: '最近项目很忙在赶进度',
+    status: 'active', importance: 0.95, confidence: 0.95,
+    knowledge: { mode: 'observed', clauses: [], relatedFactIds: [] },
+  })
+  state.facts.push({
+    id: 'f-relevant', scope: 'general', content: '周末常去公园散步',
+    status: 'active', importance: 0.2, confidence: 0.5,
+    knowledge: { mode: 'observed', clauses: [], relatedFactIds: [] },
+  })
+  saveState(SESSION, state)
+  await ctx.stop?.()
+
+  const { ctx: ctx2, runPreStep: run2 } = await boot({ events, keepState: true })
+  const injected = await run2()
+  const lines = injected.split('\n').filter(l => l.includes('最近项目') || l.includes('周末常去'))
+  assert.equal(lines.length, 2, `两条都该出现：${JSON.stringify(lines)}`)
+  assert.match(lines[0], /周末常去/, `相关的那条应排在前面，实际顺序：${JSON.stringify(lines)}`)
+  await ctx2.stop?.()
+})
+
+await check('长期记忆：没有事实时不在幕间块里留占位', async () => {
+  const events = [USER_EVENT('在吗')]
+  const { ctx, runPreStep } = await boot({ events })
+  const injected = await runPreStep()
+  assert.doesNotMatch(injected, /长期记忆/, `没有事实时不该出现该段：\n${injected}`)
   await ctx.stop?.()
 })
 

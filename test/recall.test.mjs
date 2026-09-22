@@ -222,9 +222,27 @@ ok('rankFactsByRecall：无查询时保持原顺序（不做无依据扰动）',
   assert.deepEqual(rankFactsByRecall(facts, undefined).map(f => f.key), ['a', 'b', 'c'])
 })
 
-ok('rankFactsByRecall：weight=0 时完全尊重原排序', () => {
-  const facts = [{ key: 'a', content: '公园' }, { key: 'b', content: '公园' }]
-  assert.deepEqual(rankFactsByRecall(facts, '公园', { weight: 0 }).map(f => f.key), ['a', 'b'])
+ok('rankFactsByRecall：**部分命中**也能排到不相关的前面（两级排序）', () => {
+  // 第三次踩坑的回归。曾经用「保底分 + 相关度」相加：
+  // 首位那条不相关的事实保底 1.0，而部分命中（3/6 = 0.5）加保底 0.5 恰好也是 1.0，
+  // 并列之后由原位置决定胜负——召回形同虚设。
+  // 现在先按「有没有命中」分组，任何确实命中的都排在没命中的之前。
+  const facts = [
+    { key: '无关但重要', content: '最近项目很忙' },
+    { key: '无关二', content: '家里养了只猫' },
+    { key: '相关但次要', content: '周末常去公园散步' },
+  ]
+  const ranked = rankFactsByRecall(facts, '公园散步怎么样')
+  assert.equal(ranked[0].key, '相关但次要', `部分命中也要浮上来：${ranked.map(f => f.key)}`)
+})
+
+ok('rankFactsByRecall：命中组内部按相关度排', () => {
+  const facts = [
+    { key: '弱', content: '公园' },
+    { key: '强', content: '公园散步' },
+  ]
+  const ranked = rankFactsByRecall(facts, '公园散步')
+  assert.equal(ranked[0].key, '强', `命中更多的在前：${ranked.map(f => f.key)}`)
 })
 
 ok('rankFactsByRecall：空列表/非数组安全', () => {
