@@ -479,6 +479,50 @@ await check('续写书签：注入里要求「不要重述」且只给指针', a
   await ctx.stop?.()
 })
 
+/* ============================ ⑧ 消息感知（beta10） ============================ */
+
+/** 直接往会话事件流里发一轮「用户来消息 → 模型写正文 → 回合结束」。 */
+async function emitTurn(ctx, { body, say = null } = {}) {
+  const logs = []
+  const origLog = console.log
+  console.log = (...args) => { logs.push(args.map(String).join(' ')); origLog(...args) }
+  try {
+    ctx.emit('session/event', { id: SESSION }, { type: 'user/message', data: { content: [{ type: 'text', text: '在吗' }] } })
+    if (body) {
+      ctx.emit('session/event', { id: SESSION }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: body }] } } })
+    }
+    if (say) {
+      ctx.emit('session/event', { id: SESSION }, { type: 'tool/call', data: { name: 'interlude_say', arguments: JSON.stringify({ text: say }) } })
+    }
+    ctx.emit('session/event', { id: SESSION }, { type: 'turn/end', data: { turn: 1 } })
+    await new Promise(r => setTimeout(r, 20))
+  } finally {
+    console.log = origLog
+  }
+  return logs.join('\n')
+}
+
+await check('写了正文却没调工具 → 有诊断（可能把回复写成了正文）', async () => {
+  const { ctx } = await boot({ events: [] })
+  const logs = await emitTurn(ctx, { body: '（她看了一眼消息，没动。）' })
+  assert.match(logs, /写了正文但未调 interlude_say/, `应有诊断：\n${logs}`)
+  await ctx.stop?.()
+})
+
+await check('调了 interlude_say → 没有诊断（正常回复）', async () => {
+  const { ctx } = await boot({ events: [] })
+  const logs = await emitTurn(ctx, { body: '（她想了想。）', say: '在的，刚忙完' })
+  assert.doesNotMatch(logs, /写了正文但未调 interlude_say/, `正常回复不该诊断：\n${logs}`)
+  await ctx.stop?.()
+})
+
+await check('纯沉默（什么都没写）→ 没有诊断（beta10 授予的自由）', async () => {
+  const { ctx } = await boot({ events: [] })
+  const logs = await emitTurn(ctx, {})  // 只有用户消息 + turn/end，模型什么都没写
+  assert.doesNotMatch(logs, /写了正文但未调 interlude_say/, `纯沉默不该诊断：\n${logs}`)
+  await ctx.stop?.()
+})
+
 console.log(ok ? '\n✅ Phase 2/3 端到端通过' : '\n❌ 有问题')
 fs.rmSync(TEST_HOME, { recursive: true, force: true })
 process.exit(ok ? 0 : 1)
