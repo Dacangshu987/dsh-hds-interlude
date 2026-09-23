@@ -1,0 +1,24 @@
+# dsh-hds-interlude bundle patch
+#
+# 把 hds-interlude 插件行插入 dsh profile 名单。安装方式：
+#   dsh plugin --profile web add link:<插件本地路径>
+#
+# 该行以普通 Cordis 插件加载 lib/index.js；它注入 agents / systemPrompt / tools /
+# commands / settings / webServer 服务，因此应与 dsh-base 并列挂载。
+#
+# 它内置了 QQ 通道（lib/qq-im/），自己负责收发消息。
+# 凭据（credentials）是可选依赖：没装时通道启动不了，其余功能照常。
+#
+# **默认不占用 `dshIm` 服务名**，因此与 @xmanrui/dsh-im 可以安全共存
+# （Cordis 在服务名被占用时会抛错并带崩整个插件树，两个插件都注册 = 零和竞速）。
+# 但两者同时开着会**重复投递**，所以仍建议停用 dsh-im——
+# 在 profile 的 cordis.patch.yml 里加：
+#   - id: '@xmanrui/dsh-im'
+#     disabled: true
+#
+# 确实需要把本通道作为 dshIm 对外暴露时，打开 im.exposeService，
+# 并**先停用 dsh-im**（否则总有一方会崩）。
+- insert:
+    - id: hds-interlude
+      name: dsh-hds-interlude
+
