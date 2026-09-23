@@ -18,6 +18,10 @@
 ## 📦 安装
 
 ```bash
+# 从 GitHub 安装（推荐）
+dsh plugin add github:Dacangshu987/dsh-hds-interlude
+
+# 本地开发
 dsh plugin add link:<你的本地路径>
 ```
 

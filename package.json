@@ -1,6 +1,10 @@
 {
   "name": "dsh-hds-interlude",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dacangshu987/dsh-hds-interlude.git"
+  },
   "description": "hds-interlude (time-aware, persistent narrative chat framework) ported to DeepSeek Harness. 幕间系统：聊天在幕前发生，生活在幕间继续。",
   "keywords": [
     "dsh",
@@ -81,4 +85,5 @@
   },
   "license": "AGPL-3.0"
 }
+
 
