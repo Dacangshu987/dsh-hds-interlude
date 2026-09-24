@@ -71,15 +71,30 @@ await check('无 register + 有 configEditor → scope 非空，update 深合并
   off()
 })
 
-await check('无 configEditor（精简宿主）→ scope 为 null，调用方退回静态配置', () => {
+await check('无 configEditor（服务未就绪）→ scope 仍可创建，update 抛可读错误（调用方如实报错）', async () => {
   const ctx = { get: () => undefined }
   const scope = createConfigEditorScope(ctx, 'hds-interlude', () => ({}))
-  assert.equal(scope, null)
+  assert.ok(scope, 'scope 应可创建（惰性解析，服务晚到也能用）')
+  await assert.rejects(() => scope.update({ im: { appId: '1' } }), /设置命名空间不可用|configEditor 未就绪/)
 })
 
-await check('ctx 没有 get 方法 → 不抛错，scope 为 null', () => {
+await check('ctx 没有 get 方法（裸环境）→ 不抛错，scope 可创建但 update 报不可用', async () => {
   const scope = createConfigEditorScope({}, 'hds-interlude', () => ({}))
-  assert.equal(scope, null)
+  assert.ok(scope)
+  await assert.rejects(() => scope.update({ im: { appId: '1' } }), /未就绪/)
+})
+
+await check('configEditor 异步就绪：apply 时没有、写入前有 → 写入成功（惰性解析的价值）', async () => {
+  let editor = undefined
+  const ctx = { get: () => editor }
+  const scope = createConfigEditorScope(ctx, 'hds-interlude', () => ({ enabled: true }))
+  // 第一次写入：editor 还没就绪 → 应报错。
+  await assert.rejects(() => scope.update({ im: { appId: '1' } }), /未就绪/)
+  // 宿主随后注册 configEditor（模拟异步加载完成）。
+  const fake = fakeConfigEditor()
+  editor = fake
+  await scope.update({ im: { appId: '2' } })
+  assert.equal(fake.edits.at(-1).im.appId, '2', 'editor 就绪后写入应成功')
 })
 
 await check('entry 找不到时 update 抛可读错误', async () => {
