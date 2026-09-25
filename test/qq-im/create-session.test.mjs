@@ -45,6 +45,12 @@ function makeChannel(fake = {}) {
   const controller = {
     async create(request) {
       calls.create += 1
+      // 模拟「DSH 升级后 create 强校验 preset registry」：
+      // 首次调用且 fake.createThrowsUnknown 为真 → 抛 Unknown agent preset；
+      // 之后（注册后重试）正常返回。
+      if (fake.createThrowsUnknown && calls.create === 1) {
+        throw new Error(`Unknown agent preset: ${request?.agentPreset ?? '?'}`)
+      }
       void request
       // 真实返回：只有 sessionId（+可选 agentPreset），**没有 agent**。
       return fake.createResult ?? { sessionId: 'session-new-1' }
@@ -64,6 +70,8 @@ function makeChannel(fake = {}) {
     config: { enabled: true, autoCreateSession: true, botId: 'qq' },
     log: () => {},
     transport: async () => ({ sent: true }),
+    resolvePreset: fake.resolvePreset ?? (() => fake.presetId ?? undefined),
+    registerPreset: fake.registerPreset,
   })
   return { channel, calls, agent }
 }
@@ -118,6 +126,40 @@ await check('create 抛错 → 返回 undefined（调用方据此报 create-fail
   const channel = installQqIm(ctx, { config: { enabled: true, botId: 'qq' }, log: () => {}, transport: async () => ({ sent: true }) })
   const sessionId = await channel.createSessionFor('c2c:U1', { kind: 'c2c', senderId: 'U1', content: 'x', messageId: 'm1' })
   assert.equal(sessionId, undefined, 'create 失败应返回 undefined')
+})
+
+await check('create 抛 Unknown agent preset → 先注册再重试，最终成功（DSH 升级回归修复）', async () => {
+  const registered = []
+  const { channel, calls } = makeChannel({
+    createThrowsUnknown: true,          // 首次 create 抛 Unknown（宿主不认识插件自建预设）
+    presetId: 'preset-hds-abc123',       // resolvePreset 解析出预设 id
+    registerPreset: async (id) => {      // 注册回调：记录并返回成功
+      registered.push(id)
+      return true
+    },
+  })
+  const sessionId = await channel.createSessionFor('c2c:U1', { kind: 'c2c', senderId: 'U1', content: '在吗', messageId: 'm1' })
+  assert.equal(sessionId, 'session-new-1', '注册后重试应建会话成功')
+  assert.equal(calls.create, 2, '应先失败一次、注册后重试一次')
+  assert.deepEqual(registered, ['preset-hds-abc123'], '应调用注册回调且带对预设 id')
+  assert.equal(calls.followups.length, 1, '重试成功后首条消息仍要注入')
+})
+
+await check('create 抛 Unknown 但注册不成功 → 返回 undefined，不硬撑', async () => {
+  const { channel, calls } = makeChannel({
+    createThrowsUnknown: true,
+    presetId: 'preset-hds-def456',
+    registerPreset: async () => false,   // 注册失败
+  })
+  const sessionId = await channel.createSessionFor('c2c:U1', { kind: 'c2c', senderId: 'U1', content: 'x', messageId: 'm1' })
+  assert.equal(sessionId, undefined, '注册失败应放弃建会话')
+  assert.equal(calls.create, 1, '注册失败不应再次 create')
+})
+
+await check('create 抛 Unknown 但没传 registerPreset（老宿主）→ 维持原行为返回 undefined', async () => {
+  const { channel } = makeChannel({ createThrowsUnknown: true, presetId: 'preset-hds-xyz789' })
+  const sessionId = await channel.createSessionFor('c2c:U1', { kind: 'c2c', senderId: 'U1', content: 'x', messageId: 'm1' })
+  assert.equal(sessionId, undefined, '无注册能力时维持原样')
 })
 
 await check('create 返回空 sessionId → 返回 undefined，不去 resolve', async () => {
