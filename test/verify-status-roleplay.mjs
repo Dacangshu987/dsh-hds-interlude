@@ -100,10 +100,14 @@ const checks = [
   ['live < liveTotal（普通会话没被算进来）', v.sessions.live < v.sessions.liveTotal],
   ['没有 cold 字段', !('cold' in v.sessions)],
   ['没有 stored 字段', !('stored' in v.sessions)],
-  // 自动推进只对实时角色会话计算，所以是 rp + rm 两条。
-  ['advance.sessions 只含两个角色会话', v.advance.sessions.length === 2],
+  // 自动推进对「实时角色会话」直接算；冷角色会话在 wakeIdleSessions 打开时
+  // 会被唤醒后推进（见 handleSession / shouldWakeForAdvance），所以也算进来。
+  // 线上事故：冷会话被排除 ⇒ 用户没打开会话又没有待办时，角色一整天不发消息。
+  ['advance.sessions 含 2 个实时角色会话 + 1 个可唤醒的冷会话', v.advance.sessions.length === 3],
   ['advance 不含普通会话', !v.advance.sessions.some((r) => r.sessionId === 'session-plain')],
-  ['advance 不含冷会话', !v.advance.sessions.some((r) => r.sessionId === 'session-coldish')],
+  ['advance 含冷角色会话（会被唤醒参与推进）', v.advance.sessions.some((r) => r.sessionId === 'session-coldish')],
+  ['冷会话行标了 wakeIdle', v.advance.sessions.some((r) => r.sessionId === 'session-coldish' && r.wakeIdle === true)],
+  ['实时会话行 wakeIdle=false', v.advance.sessions.filter((r) => r.wakeIdle === false).length === 2],
 ]
 
 console.log('')

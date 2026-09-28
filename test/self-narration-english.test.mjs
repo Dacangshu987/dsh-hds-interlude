@@ -43,8 +43,20 @@ check('英文思考 + <timeline_plan> JSON → 判定为泄漏', () => {
   assert.equal(looksLikeSelfNarration(text).leak, true)
 })
 
-check('单独的 <timeline_plan> 标记 → 判定为泄漏', () => {
-  assert.equal(looksLikeSelfNarration('<timeline_plan>{"beats":[]}</timeline_plan>').leak, true)
+check('单独的 <timeline_plan> 块 → 不算泄漏（它是插件自己要的协议块）', () => {
+  // 关键回归：<timeline_plan> 是**时间导演要求模型交出**的协议块
+  // （见 timeline-director.js）。把它判成「自言自语」会让每一轮带账本的
+  // 自动推进被整轮跳过——线上症状正是「角色一整天不发消息」。
+  // 正确语义：判据前先剥掉协议块；它本身没有要发的话 → 下游判 no-speech，
+  // 而 cleanImText 保证它不会出现在外发文本里。
+  assert.equal(looksLikeSelfNarration('<timeline_plan>{"beats":[]}</timeline_plan>').leak, false)
+})
+
+check('故事正文 + <timeline_plan> 块 → 不算泄漏（剥掉协议块后只剩正常故事）', () => {
+  const text = '她下班回到家，煮了碗面。\n<timeline_plan>\n{"beats":[{"at":"0.5","kind":"activity"}]}\n</timeline_plan>'
+  assert.equal(looksLikeSelfNarration(text).leak, false, '带账本的正常故事不该被整轮拦掉')
+  assert.ok(!cleanImText(text).includes('timeline_plan'), '账本块必须被清洗掉（不能发给用户）')
+  assert.ok(cleanImText(text).includes('煮了碗面'), '正常故事文本要保住')
 })
 
 check('<thinking> 标记 → 判定为泄漏', () => {
