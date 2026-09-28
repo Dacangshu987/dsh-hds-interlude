@@ -40,7 +40,10 @@
 | **rc19 守卫默认值收紧** | `lib/repetition-guard.js` | 本仓守卫段末尾已有等价句「拿不准时，就只发一条。」（上游 `When unsure, make this reply a single bubble.`） |
 | **rc23 审计：due 批次失败整批退避** | `lib/index.js` + `lib/state.js` | `state.proactiveBackoffUntil`；模型这一轮什么都没写出来（`no-writeback`）→ 整批退避一个扫描周期，杜绝每周期重新生成的无界烧 token |
 | **rc23 审计：入站重放去重** | `lib/qq-im/inbound.js`（既有） | `DedupeWindow` 以 **messageId** 为键、TTL 10 分钟，覆盖「桌面超时-重放双写双回」；语义与上游私聊/群聊两侧一致 |
-| **rc6 QQ 合并转发读取（纯函数核 + 入站占位）** | `lib/forward-message.js` + `lib/qq-im/inbound.js` | 预算 30/8000/3、id 提取（元素 + CQ 码）、归一化渲染与截断标注、可注入 fetcher 的递归读取；入站把裸 `<forward>`/`[CQ:forward]` 转成 `[合并转发：id]` 占位 |
+| **rc6 QQ 合并转发读取（完整）** | `lib/forward-message.js` + `lib/qq-im/inbound.js` + `lib/qq-im/channel.js` | 预算 30/8000/3、id 提取（元素 + CQ 码 + 字符串标签）、归一化渲染与截断标注、可注入 fetcher 的递归读取、入站占位与替换、`im.forwardLimits` 配置 |
+| **rc3/rc4 管理员注记（权威层 + 预算保护）** | `lib/index.js` + `lib/script-entry.js` | `kind:'admin-note'` / `actor:'system'` / `[管理员注记] ` 前缀 / `metadata.source='administrator'`；每回合带上最近 3 条（每条 ≤2000 字、合计 ≤6000、超限保前缀并标 `…[注记截断]`）；`/interlude note [<内容>\|clear]` |
+| **rc13 用户报时提取 + 提示词投影** | `lib/user-reported-times.js` + `lib/index.js` | 中文钟点「八点半」修复；只在他刚说完时注入事实行 |
+| **rc13 preplan 物化滞后防线** | `lib/preplan.js` | `ensureWindowDays`：缺 [今天,明天] 时本地无模型重物化（锚定今天） |
 
 ### ❌ 待移植（按建议优先级）
 
@@ -371,7 +374,37 @@ a small factual aid, not an attempt to infer every temporal expression）。
 
 ---
 
-## 十、验证基线
+## 十、本轮移植详情：rc3/rc4 管理员注记
+
+### 上游实现
+
+| 上游 | 本仓落点 |
+|---|---|
+| `addAdminScriptNote`：`appendEntry({kind:'admin-note', actor:'system', content:'[管理员注记] '+text, metadata:{source:'administrator'}})` + 触发压缩 | `addAdminNote`（同一形态；压缩由 DSH 侧负责） |
+| 命令 `interlude.script.note <content:text>`（管理员专用） | `/interlude note <内容>`（+ 无参列表 / `clear`；本仓是 DSH 命令，管理员即会话使用者） |
+| 提示词 `ADMIN NOTES`：权威事实或指令；在其主题上覆盖叙事即兴；权重高于普通系统事件；**直到被后来的注记否定之前有效**；当作主角已内化的既定现实；**永远不要让她提到看过注记** | `adminNotesLine` 的中文口径（逐条对应） |
+| 预算保护（`compactPromptEntries` admin 段）：最多 3 条最新、每条 ≤2,000 字、合计 ≤6,000 字；超限保留前半段（含前缀）并标截断 | 同（`ADMIN_NOTE_MAX_COUNT/CHARS` + `ADMIN_NOTES_BUDGET`） |
+
+### DSH 侧适配
+
+- **呈现方式**：上游靠 `recentScript` 窗口自然带上注记；本仓的模型上下文是**会话历史**
+  （没有 recentScript 投影），所以注记必须显式进入每回合的 pre-step 附加段——
+  与已移植的世界事件同一套做法（`takeWorldEventsForPrompt` / `adminNotesLine`）。
+- **每回合都带最近 3 条**（而不是"注入一次即可"）：DSH 会自己压缩会话历史，
+  靠一次性注入无法保证权威事实仍在窗口里；上游的"受保护窗口"语义正对应这一点，
+  且上限 6,000 字把成本钉死。
+- `ENTRY_KINDS` 保持与上游可召回清单逐字一致（差分契约测试不受影响），
+  `admin-note` 与 `world-event` 一样走 `HOST_ENTRY_KINDS`。
+
+### 测试
+
+`test/admin-note.test.mjs`（4 项）：命令写入的 kind/actor/前缀/metadata；
+提示词投影（权威措辞 + 正文 + 「不要提看过注记」）；预算保护（只带最新 3 条、
+超长截断标注、合计受约束）；无参数列出（空注记不会落库）+ `clear` 后提示词不再出现。
+
+---
+
+## 十一、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
