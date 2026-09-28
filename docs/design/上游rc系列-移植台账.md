@@ -35,6 +35,7 @@
 | **rc23 群聊意愿档位化 + auto 档** | `lib/group-willingness.js` | 五档 + auto 三态 + 睡眠态三固定行为；见下节「DSH 适配」 |
 | **rc23 世界事件播种器 纯函数核心** | `lib/world-seeder.js` | 运行配置夹取、提示词（逐字）、四道纯函数闸、防御解析、Jaccard 去重、执行器接缝 |
 | **rc23 世界事件播种器 M1（注入侧）** | `lib/world-seeder.js` + `lib/index.js` + `lib/state.js` | 事件表 `state.seededEvents`（含状态机）、到点排水 → `kind:'world-event'/actor:'system'` 条目入账本、pre-step 以「事实权威、反应自由」呈现给模型、`/interlude seeded` 命令 |
+| **rc23 世界事件播种器 M2（生成侧）** | `lib/world-seeder.js` + `lib/index.js` | 抖动跳过、频控、摘要级载荷、逐条采纳（含「high 每天至多 1 条」）、入库排期、`/interlude seeded generate` |
 
 ### ❌ 待移植（按建议优先级）
 
@@ -154,7 +155,41 @@
 
 ---
 
-## 五、验证基线
+## 五、本轮移植详情：rc23 世界事件播种器（M2 生成侧）
+
+### 上游实现（`service.ts` 的 `worldSeederSweep` / `buildWorldSeederPayload`）
+
+| 上游语义 | 上游值 | 本仓落点 |
+|---|---|---|
+| 节律抖动 | `Math.random() < 0.25` 直接跳过本轮 | `planWorldSeederSweep` → `reason='jitter'` |
+| 频控① 挂起上限 | `scheduled.length >= maxPending` → 不生成 | `reason='max-pending'` |
+| 频控② 当日上限 | 近 24h `injected >= dailyCap` → 不生成 | `reason='daily-cap'` |
+| 去重输入 | 近 14 天已注入事件摘要（截 -10） | `recentSummaries` → 载荷 `recentlySeededEvents` |
+| **额外闸：high 每天至多 1 条** | 采纳循环里 `if (draft.importance === 'high' && highToday >= 1) continue` | `acceptSeedDrafts` → `reason='high-daily-cap'` |
+| 载荷 | 环境（时区/季节/世界设定）+ 历史（压缩 2000 预算、截 -14、每条 240 字）+ 场景/弧摘要（500）+ workingDetails（-8）+ 拉黑名单 + 近期已播种 + constraints | `buildWorldSeederPayload`（逐字段对齐；季节 3–5 春/6–8 夏/9–11 秋/其余冬） |
+| 采纳上限 | 循环内 `pendingCount >= maxPending \|\| dailyCount >= dailyCap` → break | 同（`acceptSeedDrafts` 的计数递增） |
+| 排期后唤起到点 | `scheduleDueIntentWake(story.id, occursAt)` | `scheduleIntentWake(key, occursAt)` |
+| 触发时机 | 定时器 cadence + **每次 advance 提交后 piggyback** | 搭在会话扫描上（每次 `handleSession`），由 `state.lastSeedSweepAt` 按 `cadenceMinutes × (0.7~1.3)` 节流 |
+
+### DSH 适配点（**刻意偏离，已在此记录**）
+
+- **执行器可注入**：上游用模型中心连接行勾选出的 provider；本仓用
+  `ctx.__worldSeederExecute`。未注入 → `available=false` → 生成关闭、**注入侧不受影响**。
+- **手动触发**：本仓新增 `/interlude seeded generate`（跳过 cadence 节流与抖动，
+  便于验证与应急），上游无此命令。
+- 注入与水位的开关来源见上一节（绑配置开关而非「已指派模型」）。
+
+### 测试
+
+- `test/world-seeder-m2.test.mjs`（14 项）：抖动/两条频控/14 天窗口/禁用、季节映射、
+  载荷裁剪与预算与拉黑过滤、采纳的三条规则（high 每日上限、上限 break、四道闸拒绝原因）、
+  以及四个端到端用例（执行器产出 → 入库；无执行器 → 不生成；校验闸拦截；high 每日一条）。
+  > 端到端用例用「重试直到真正跑过一轮」的辅助规避上游 25% 抖动带来的概率性
+  > （单次被跳过的概率 25%，6 次全跳过 < 0.03%）。
+
+---
+
+## 六、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
