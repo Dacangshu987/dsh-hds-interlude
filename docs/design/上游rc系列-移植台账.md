@@ -1,0 +1,110 @@
+# 上游 rc 系列 —— 移植台账
+
+> 参照物：`D:\ds-harness-test\111\.tmp-rc24\hds-interlude-1.0.1-rc24`（上游 `1.0.1-rc24` 完整源码包，
+> 含 `src/` 43 个 .ts、`test/` 59 个、`docs/` 33 篇）。
+> 上游仓库：<https://gitee.com/MomoiCore/hds-interlude>
+>
+> 本文只记录**逐项状态与理由**。凡「N/A」都写明架构差异，避免下次又照着错的前提做一遍。
+
+---
+
+## 一、版本线
+
+| 上游版本 | 日期 | 本仓状态 |
+|---|---|---|
+| `0.1.4` → `1.0.1-beta6-rebuild` | 2026-09-01 → 09-10 | ✅ 已对齐（见 `上游更新方案-落实进度.md`） |
+| `1.0.1-rc1` ~ `rc13` | 09-12 → 09-21 | ◐ 部分（见下表） |
+| `1.0.1-rc14` ~ `rc19` | 09-23 | ◐ 部分（rc18 已移植，其余多为提示词/协议） |
+| `1.0.1-rc20` ~ `rc22` | 09-24 | ❌ 未移植 |
+| `1.0.1-rc23` | 09-26 | ◐ **档位化已移植**；播种器未移植 |
+| `1.0.1-rc24` | 09-27 | ❌ 未移植（配置形态，多为 N/A） |
+
+---
+
+## 二、逐项状态
+
+### ✅ 已移植
+
+| 上游项 | 落点 | 说明 |
+|---|---|---|
+| rc1 健康诊断面板 | `lib/health.js` | 内存滚动指标 + `/interlude status` 健康段 |
+| rc1/rc2 Schema 默认值对齐 | `lib/schema.js` | `contextEntryLimit=35`、`contextTimeWindowMinutes=45` |
+| rc2/rc4 fact `lastSeenAt` | `lib/state.js` | 排序对空值回退 |
+| rc2 主动联系计数移到投递结果后 | `lib/index.js` | `reachedOut` 只在 `deliverToIm.ok` 时自增 |
+| **rc18 连发同条数守卫** | `lib/repetition-guard.js` | 倒序归批统计每批气泡数，尾部连续 ≥2 批同条数即守卫 |
+| **rc23 群聊意愿档位化 + auto 档** | `lib/group-willingness.js` | 五档 + auto 三态 + 睡眠态三固定行为；见下节「DSH 适配」 |
+
+### ❌ 待移植（按建议优先级）
+
+| 优先级 | 上游项 | 上游落点 | 备注 |
+|---|---|---|---|
+| 1 | **rc23 世界事件播种器 M1+M2** | `src/world-seeder.ts`(10.4KB) + `docs/WORLD_EVENT_SEEDER_DESIGN.md` | 全新子系统；六道校验闸；`[世界事件]` 条目注入 |
+| 2 | rc21 首条发言打字时间下限 | `service.ts` `sendOutgoingMessages` | 我们已有分条间隔，缺首条下限 |
+| 3 | rc19 守卫默认值收紧 | 一行英文 | `When unsure, make this reply a single bubble.` |
+| 4 | rc22/rc23 审计项 | `service.ts` | due 批次整批退避、群消息桥接重放去重、取消遗留 narrative-retry |
+| 5 | rc6 QQ 合并转发读取 | `src/forward-message.ts`(8.5KB) + `docs/FORWARD_MESSAGE_READING_DESIGN.md` | `forward` 段 → 读节点正文，带预算 |
+| 6 | rc13 十一项缺陷修复 | `service.ts` 等 | 含**中文时间解析「八点半」**、清库后向量缓存失效、时间线分页游标等，需逐条核对 |
+| 7 | rc3/rc4 管理员注记 | 主提示词 + `compactPromptEntries` | `[管理员注记]` 权威语义 + 防截断 |
+| 8 | rc5/rc7 写作/视觉表达提示词 | `narrator.ts` | 需与我们的中文等价物逐句对照 |
+| 9 | rc14 模型特化档位 | `src/specialization.ts`(14KB) | 架构不同，但「按模型能力给 lite/standard/full 三档提示词」可借鉴省 token |
+
+### ➖ N/A（架构差异，明确不做）
+
+| 上游项 | 为什么 N/A |
+|---|---|
+| rc12 Anthropic Messages 双协议 / cache-first / SSE 容错 | DSH 宿主统一管理 provider 与传输 |
+| rc14-17 传输协议形态回退、气泡分隔符 `<sep/>` 教学 | 本仓用 `interlude_say` 工具调用；分条语义是「一行一条」 |
+| rc20 死代码清理 / 命名对齐 / TurnEngine 回流 / `ensure-fresh-bundle.mjs` | 本仓是手写 JS，无 `src→lib` 构建链 |
+| rc16 `clearDatabase` 30 秒在途屏障 | 本仓 JSON 状态 + `withStateLock`，无数据库清库动作 |
+| rc23/rc24 Console 主提示词入口、播种器「用途勾选」 | Koishi Console 与本仓设置页形态不同（可另做等价入口） |
+| rc11/rc10 跨群投递 `crossConversationActions` | 需多群绑定语义；本仓目前一 bot 一私聊/群绑定。**若需要可再评估** |
+
+---
+
+## 三、本轮移植详情：rc23 群聊意愿档位化
+
+### 上游语义（`src/group-willingness.ts` L103-244）
+
+- **五档参数表** `WILLINGNESS_TIERS`：quiet / reserved / normal / active / eager
+  （阈值 0.80/0.75/0.62/0.30/0.10，增益 0.12/0.17/0.25/0.34/0.45，半衰期 150–360s）。
+  基线校准：normal ≈ 每 4~5 条普通群消息触发一次（固定掷骰 0.4 的期望首发位置：
+  eager=1、active=2、normal=4~5、reserved=6~8、quiet=9~13）。
+- **auto 档**：按 `lifeStatus`（`busy|asleep|idle`）切档，三态各可配；
+  **状态缺失或超过 6 小时未刷新 → 回退 normal**（`LIFE_STATUS_STALE_MS`）。
+- **睡眠态三固定行为**：① @ 不再直通；② 概率 ×0.2（`ASLEEP_PROBABILITY_MULTIPLIER`）；
+  ③ 掷骰失败 reason 记为 `asleep`。
+- **存量兼容**：preset 未设置（或 `off`）但旧数值门 `enabled=true` → 按 `custom` 处理，行为字节级不变。
+- **评分数学零改动**：档位只换参数来源。
+
+### 本仓实现
+
+| 项 | 落点 |
+|---|---|
+| 档位表 / auto 映射 / 常量 / 归一 | `lib/group-willingness.js` |
+| 档位统一门 `evaluateWillingnessGate` / `consumeWillingnessGate` | 同上（`resolveWillingnessLayers` 私有） |
+| 生活状态字段 `state.lifeStatus` + `normalizeLifeStatus` | `lib/state.js` |
+| 配置 `im.group.willingnessPreset` / `willingnessAuto` | `lib/schema.js` |
+| 评估门接线 + 发言记账（同档位解析） | `lib/qq-im/channel.js` |
+| lifeStatus 读取器注入 | `lib/index.js`（`resolveLifeStatus`） |
+| 生产者：`/interlude life <busy\|asleep\|idle\|clear>` | `lib/index.js` 命令分支 |
+| 测试 | `test/group-willingness-tiers.test.mjs`（9 项） |
+
+### DSH 适配点（唯一与上游的差别）
+
+上游的 `lifeStatus` **搭压缩器便车**（压缩提示词附带返回，零额外模型调用）。
+本仓**没有独立侧端模型通道**（`lib/side-task.js` 只提供解析/重试原语，
+执行器注入点尚无宿主实现），因此把它做成**可写入的宿主调度字段**：
+
+- `state.lifeStatus = { status, updatedAt }`，防御归一（仅三值 + 合法时间戳）；
+- 归属于**宿主调度字段，不进模型上下文**（上游 `storyStateForPrompt` 同样剥除）；
+- 生产者：`/interlude life …` 命令（本仓新增）；未来任何侧任务/交接写入即可复用；
+- **缺失/过期回退 normal 的行为与上游一致**，因此 auto 语义等价。
+
+> 结论：机制 100% 移植；生产者按平台能力替换，且已保留同样的语义边界。
+
+---
+
+## 四、验证基线
+
+每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
+→ 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
