@@ -845,7 +845,7 @@ await check('并发扫描下每条待办最多开口一次（定时器撞上启�
 })
 
 await check('插件唤起的回合里调了 interlude_say → 只投一次，不被交互式路径重投（线上「每条都出现两遍」回归）', async () => {
-  // 线上现场：群聊绑定 session-xxx…，一次主动开口之后 QQ 里
+  // 线上现场：群聊绑定 session-8888ccd0…，一次主动开口之后 QQ 里
   // 「对了 跟你说个离谱的事」「我家楼下那家面馆 涨价了」「一碗涨两块…」
   // **每条都出现两遍**，且 state.json 的 lastDelivery 只记了 3 条。
   //
@@ -1148,6 +1148,36 @@ await check('配额用光后，角色答应过的提醒仍然发得出去（承�
   const delivered = await waitFor(() => host.sent.length > 0, 6000)
   assert.ok(delivered, '承诺型待办不该被配额挡住')
   assert.ok(host.sent.map(m => m.text).join(' ').includes('药'), JSON.stringify(host.sent.map(m => m.text)))
+  await host.ctx.stop?.()
+})
+
+/**
+ * 整批退避（移植自上游 1.0.1-rc23 的审计修复）：
+ * 到点批次失败一次后整批让位一个扫描周期，避免「每个扫描周期都重新唤起模型」
+ * 的无界烧 token。这里直接钉住这道闸（退避中不开口 / 过期后恢复开口）。
+ */
+await check('退避窗口内：到点待办整批让位，不投递也不唤起模型', async () => {
+  const sessionId = 'session-cold-backoff'
+  const host = await bootWithPendingIntent({
+    sessionId,
+    integration: { conversationKey: 'c2c:USER_BACKOFF' },
+    statePatch: { proactiveBackoffUntil: Date.now() + 60_000, proactiveBackoffReason: 'no-writeback' },
+  })
+  const delivered = await waitFor(() => host.sent.length > 0, 1200)
+  assert.equal(delivered, false, '退避窗口内不该有任何投递')
+  assert.equal(host.followups?.length ?? 0, 0, '退避窗口内不该唤起模型（避免白烧一轮上下文）')
+  await host.ctx.stop?.()
+})
+
+await check('退避已过期：到点待办照常开口（闸不会永久粘住）', async () => {
+  const sessionId = 'session-cold-backoff-expired'
+  const host = await bootWithPendingIntent({
+    sessionId,
+    integration: { conversationKey: 'c2c:USER_BACKOFF2' },
+    statePatch: { proactiveBackoffUntil: Date.now() - 60_000, proactiveBackoffReason: 'no-writeback' },
+  })
+  const delivered = await waitFor(() => host.sent.length > 0, 6000)
+  assert.ok(delivered, '退避过期后应照常开口')
   await host.ctx.stop?.()
 })
 
