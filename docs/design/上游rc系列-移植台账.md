@@ -33,6 +33,8 @@
 | rc2 主动联系计数移到投递结果后 | `lib/index.js` | `reachedOut` 只在 `deliverToIm.ok` 时自增 |
 | **rc18 连发同条数守卫** | `lib/repetition-guard.js` | 倒序归批统计每批气泡数，尾部连续 ≥2 批同条数即守卫 |
 | **rc23 群聊意愿档位化 + auto 档** | `lib/group-willingness.js` | 五档 + auto 三态 + 睡眠态三固定行为；见下节「DSH 适配」 |
+| **rc23 世界事件播种器 纯函数核心** | `lib/world-seeder.js` | 运行配置夹取、提示词（逐字）、四道纯函数闸、防御解析、Jaccard 去重、执行器接缝 |
+| **rc23 世界事件播种器 M1（注入侧）** | `lib/world-seeder.js` + `lib/index.js` + `lib/state.js` | 事件表 `state.seededEvents`（含状态机）、到点排水 → `kind:'world-event'/actor:'system'` 条目入账本、pre-step 以「事实权威、反应自由」呈现给模型、`/interlude seeded` 命令 |
 
 ### ❌ 待移植（按建议优先级）
 
@@ -104,7 +106,55 @@
 
 ---
 
-## 四、验证基线
+## 四、本轮移植详情：rc23 世界事件播种器（M1 注入侧）
+
+### 上游实现（`src/world-seeder.ts` + `src/service.ts` 的 `drainDueSeededEvents`）
+
+| 上游项 | 上游值 | 本仓落点 |
+|---|---|---|
+| 默认运行参数 | cadence 45 / maxPending 4 / dailyCap 4 / maxHorizon 72h / temp 0.9 / maxTokens 1000 / timeout 60s | `DEFAULT_WORLD_SEEDER_RUNTIME`（逐字对齐） |
+| 侧模型系统提示词 | 全英文，含 `MOST RUNS MUST RETURN an empty events array.`、`BLOCKED NAMES` | `worldSeederSystemPrompt()`（**逐字对齐**） |
+| 校验闸① 时间窗 | `occursAt ∈ (now, now+maxHorizon]` | `validateSeedEvent` → `invalid-time` |
+| 校验闸② 拉黑 | subjects/summary 命中名单（含双向包含，长度 ≥2 才参与） | `blocked-name` |
+| 校验闸③ 深夜 high | 故事时区 0:00–6:00 的 high 事件拒 | `night-high` |
+| 校验闸④ 去重 | 与近 14 天摘要 bigram Jaccard > 0.6 | `duplicate`（`summaryJaccard`） |
+| 校验闸⑤/⑥ | Preplan 冲突、频控（pending/dailyCap） | 频控在排水侧（`dailyCap`）；Preplan 冲突待 M2 接入 |
+| 注入形态 | `kind:'world-event', actor:'system', content:'[世界事件] '+summary, metadata:{seededEventId,importance}` | 逐字对齐（`appendEntry`） |
+| 排水顺序 | 按 `occursAt` 升序；过期 → `expired` 并 continue；`low && !includeLow` → 跳过 | 逐字对齐（`planSeedDrain` + `drainSeededEvents`） |
+| 事件表 | `interlude_seeded_event`（SQLite + 自增 id + status 四态） | `state.seededEvents[]`（JSON，`nextId` 只增、容量 60） |
+
+### 增量闸（上游 service 层）
+
+- `importance === 'low' && !includeLow` → 跳过：上游由调用方传 `phase !== 'user-message'`，
+  **用户消息回合不塞质感级噪声**。本仓排水发生在后台扫描（无用户回合相位），
+  故固定传 `true`，参数保留供未来复用。
+
+### DSH 适配点（**刻意偏离，已在此记录**）
+
+上游把「是否排水」绑在 `worldSeederRuntime.enabled` 上，而该值要求**已指派模型**
+（模型中心连接行勾选 `useForWorldSeeding`）。本仓没有侧端模型通道，
+若照搬则 **M1 永远无法运行**（没有任何连接可勾选）。
+因此这里把排水绑在**配置开关** `cfg.worldSeeder.enabled` 上：
+- 注入侧（M1）**不需要第二个模型**即可工作；
+- 生成侧（M2，需要模型）通过可注入执行器 `ctx.__worldSeederExecute` 接入，
+  未注入时 `createWorldSeeder(...).available === false`，生成自动关闭
+  ——与上游「未勾选连接即关闭（生成）」语义一致。
+
+> 结论：纯函数与注入形态 100% 对齐；仅「排水开关的来源」按平台能力替换，
+> 且已在测试中显式断言该偏离的可观测行为。
+
+### 测试
+
+- `test/world-seeder.test.mjs`（11 项）：四道闸逐条、边界（恰好 now、超时限、
+> 双向包含、单字名字不参与、时区切换影响深夜判定）、防御解析、运行配置夹取、
+> 生成侧接缝（系统提示词逐字）、事件表归一、排水顺序与过期、注入前缀。
+- `test/world-seeder-m1.test.mjs`（5 项）：端到端——到点事件入账本（kind/actor/前缀/
+> metadata 回链）、pre-step 呈现且只呈现一次、过期不补发、关闭时不排水、
+> 「无执行器也能注入」的偏离断言。
+
+---
+
+## 五、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。

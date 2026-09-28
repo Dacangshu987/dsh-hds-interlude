@@ -115,7 +115,10 @@ async function boot({ wakeIdleSessions = true, intervalMinutes = 60 } = {}) {
 
   const cfg = plugin.Config({
     timeZone: 'Asia/Shanghai',
-    runtime: { autoAdvanceEnabled: true, autoAdvanceIntervalMinutes: intervalMinutes, autoAdvanceJitterMinutes: 0 },
+    // 显式关掉休息窗口：否则在夜间（23:00–07:00）跑测试时推进间隔会被拉长到
+    // 120–240 分钟，夹具的「3 小时前」可能落在扩展间隔内 → 用例随运行时刻飘红。
+    // 本用例只关心「冷会话会不会被唤醒」，与休息节奏无关。
+    runtime: { autoAdvanceEnabled: true, autoAdvanceIntervalMinutes: intervalMinutes, autoAdvanceJitterMinutes: 0, restWindows: [] },
     proactive: { enabled: true, wakeIdleSessions },
     im: {
       enabled: false,
