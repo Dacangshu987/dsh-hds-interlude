@@ -471,28 +471,34 @@ autoTier 全部规则与两处例外、三种模式与 source、家族块最小�
 `resolveSpecialtyBlocks` 的选择、以及**渲染落地**三条（留空=完整块无家族行；
 gemini-flash 用精简块且不混入别家行；claude/kimi 各自正确）。
 
-### 只剩一项：rc11 私聊回合跨群投递（crossConversationActions）
+### rc11 私聊回合跨群投递（crossConversationActions）—— 已移植
 
-**不是 N/A，是尚未立项的完整特性**。上游形态：
+上游形态：`allowCrossConversationMessages` + `maxCrossConversationActions`（默认 1、上限 5）；
+`availableGroupTargets` 列出**可发目标**（是"可发对象"而非"已发回执"）；
+提示段 `CROSS-CHANNEL DELIVERY`；提交后执行跨会话投递。
 
-- 配置：`allowCrossConversationMessages`、`maxCrossConversationActions`（默认 1，上限 5）；
-- 载荷：`availableGroupTargets`（她这一轮**可能**发消息的群目标清单）；
-- 提示词：`CROSS-CHANNEL DELIVERY: interaction is only the current private reply.
-  availableGroupTargets lists …`（私聊回复与跨频道投递是两件事）；
-- 服务：提交后执行跨会话投递（且合成动作在 Commit 前注入 `decision.crossConversationActions`）。
+| 上游 | 本仓 |
+|---|---|
+| 目标来自配置里启用的群（`enabled !== false`） | 目标来自**本 bot 已绑定的群会话**（`bindings.list(botId)`，`group:` 前缀）＋ 白名单 —— 语义等价，且不必再配一份群表 |
+| 只在 `!groupContext` 且 user-message 相位提供 | 只在当前绑定是**私聊**时提供（群聊回合为空） |
+| `maxCrossConversationActions`（默认 1） | `im.crossConversation.maxPerTurn`（默认 1，0–5），**每回合在 pre-step step 1 归零** |
+| `participantId: "group:<id>"` + label + groupId | 同（提示里给出精确 `target=\`group:<id>\``） |
+| 提示段：私聊回复与跨频道投递是两件事；承诺稍后发 ≠ 已发；目的地不明不要猜；不要想象观众反应 | 逐条对应的中文段（`crossChannelLine`） |
+| `crossConversationActions:[{participantId,mode,content}]` | `interlude_say` 的可选 `target` 参数（本仓是工具调用式发言，没有 JSON decision） |
 
-**本仓落地要点（下一轮立项时按此实现）**：
+**DSH 侧的两处刻意选择**（已入档 + 测试钉住）：
 
-1. `interlude_say` 目前**只有 `text`** 一个参数、目标固定为当前绑定会话
-   （`deliverToIm` → `bindingFor(key, state, cfg)`）——跨群投递需要一个可选的
-   `target`（或独立的 `interlude_send_to` 工具）与「目标 → 绑定」的解析；
-2. 目标清单来自 `bindings.list(botId)`（本仓一个 bot 可绑多个会话，故可行），
-   需要一个白名单配置（对应上游的群白名单）与每轮上限；
-3. 投递路径要能**显式指定**目标绑定，而不是从会话 key 推导；
-4. 提示词侧按上游「私聊回复 ≠ 跨频道投递」的口径加一段，并补 round-trip 测试。
+1. **立即投递**：上游在 Commit 之后批量执行跨会话投递；本仓在工具调用时直接走通道。
+   原因是本仓的常规投递会写 `state.lastImDelivery` 与投递账本（那是"本轮私聊说了没有"
+   的事实来源），跨群若复用同一路径会把它冲掉。因此跨群走**独立路径**，结果记到
+   `state.crossDeliveries`（与 `lastImDelivery` 分开）。用户可见语义一致：群里真的收到了。
+2. **同一道自言自语闸**：跨群文本在发送前过 `looksLikeSelfNarration`——否则模型可能
+   把思考过程发到群里（工具参数塞思考是发生过的）。
 
-> 之所以放到最后：它是这轮清单里唯一需要**新增投递目标语义**的项（其余都是
-> 在既有单目标路径上加约束或加事实），改动面比前面任何一项都大。
+**测试**：`test/cross-conversation.test.mjs`（6 项）：提示段（私聊才注入、列出精确
+participantId 与群名、带「承诺 ≠ 已发」「不要想象观众反应」）、未启用/白名单外不注入、
+带 target 真的发到群里并记录（含"常规路径仍延后发送"的对照）、未知目标拒绝、
+每轮上限与跨回合归零、自言自语拒绝。
 
 ---
 
