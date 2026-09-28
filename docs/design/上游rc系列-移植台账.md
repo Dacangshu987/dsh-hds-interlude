@@ -44,6 +44,8 @@
 | **rc3/rc4 管理员注记（权威层 + 预算保护）** | `lib/index.js` + `lib/script-entry.js` | `kind:'admin-note'` / `actor:'system'` / `[管理员注记] ` 前缀 / `metadata.source='administrator'`；每回合带上最近 3 条（每条 ≤2000 字、合计 ≤6000、超限保前缀并标 `…[注记截断]`）；`/interlude note [<内容>\|clear]` |
 | **rc13 用户报时提取 + 提示词投影** | `lib/user-reported-times.js` + `lib/index.js` | 中文钟点「八点半」修复；只在他刚说完时注入事实行 |
 | **rc13 preplan 物化滞后防线** | `lib/preplan.js` | `ensureWindowDays`：缺 [今天,明天] 时本地无模型重物化（锚定今天） |
+| **rc5/rc7 线上表达提示词** | `lib/render.js` | rc5 无条件反锚定基线（每轮独立选择）+ rc7 贴图元语言规则（不停在画面本身、连发也是有意表达）；只在 IM 场景渲染 |
+| **rc14 模型特化推断层 + 家族块** | `lib/specialization.js` + `lib/render.js` + `lib/schema.js` | 家族识别（8 家族 + generic，顺序逐字对齐）、auto 档位（含 deepseek / glm-5 两处例外）、三档模式与 source 标记、家族块最小偏移（打字块替换 + 至多一条新增行）；配置 `specialization {mode, modelProbe}` |
 
 ### ❌ 待移植（按建议优先级）
 
@@ -417,7 +419,61 @@ a small factual aid, not an attempt to infer every temporal expression）。
 
 ---
 
-## 十一、验证基线
+## 十一、本轮移植详情：rc14 模型特化
+
+### 上游（`src/specialization.ts`，14KB）
+
+一个模型的「档位」决定提示词里**给多少约束**：弱模型（flash/lite/mini 系）约束一多就
+执行不过来、反而丢关键规则；强模型（claude/gpt）给足了才不出戏。上游分三档
+（`lite`/`standard`/`full`）按模型名自动推断，再叠一层**家族块**做最小偏移。
+
+### 本仓移植：推断层（逐字对齐）
+
+| 上游 | 本仓 |
+|---|---|
+| `FAMILY_PATTERNS`（8 家族 + 顺序即优先级） | 同（claude → gemini-flash → gemini → gpt → grok → kimi → glm → deepseek） |
+| `detectFamily`（首命中者胜，否则 `generic`） | 同 |
+| `autoTier` | 同，含**两处上游例外**：`deepseek` 不吃「flash→lite」（V4-Flash 数据支持 standard）、`glm-5` 起不算 lite |
+| `inferSpecialty`（auto / 手动档位 / off，带 source 标记） | 同 |
+| 未识别家族**保守回退 full** | 同（"避免静默改变现有安装的行为"） |
+
+### 本仓移植：家族块（内容按本仓口径重写，规矩照搬）
+
+上游的 `typed` 块正好对应本仓刚移植的 rc5/rc7 打字与贴图规则，于是按上游
+「**最小偏移：打字块/长度块替换 + 至多一条新增行**」的规矩落地：
+
+| 家族 | 偏移 |
+|---|---|
+| `gemini-flash` | 换**精简版打字块**（去掉猫贴图延展，补「真人打出来的消息朴素具体直接」）+ 一条行文基调 |
+| `kimi` | 完整打字块 + 补「迟疑/改主意/矛盾是正常状态」一段（对应 `TYPED_MESSAGES_KIMI` 的插入） |
+| `claude` | 一条家族行（场景不必圆满收束，不要总结句/教训/情绪标签收尾） |
+| `glm` | 一条家族行（情绪跟着真实起因走，不滑向温情安慰） |
+| 其余 | 无偏移（`{}`） |
+
+### N/A（架构差异，已写明理由）
+
+- 上游的 `length` 块是**全局英文文风寄存器**；本仓文风来自角色卡（canon 的「文风」段），
+  全局再写一层会与人设打架 → 不移植；
+- `CONTENT_ONLY_TRANSPORT` / `LITE_*` / JSON `script` 合约那一半是**传输协议**层：
+  本仓用 `interlude_say` 工具调用发言，没有 JSON 合约 → N/A（与 rc12/rc16/rc17 同一判断）。
+
+### DSH 侧适配（唯一差别）
+
+上游从**模型中心的连接名**取探测串；DSH 由宿主管模型路由，**插件侧读不到模型名**
+（schema 里也已剔除模型提供商中心）。因此探测串做成用户配置
+`specialization.modelProbe`：填模型名即按上游规则自动分档；**留空 → generic → full**，
+与上游「未识别家族回退 full」一致，也就是**默认完全不影响现状**。
+
+### 测试
+
+`test/specialization.test.mjs`（8 项）：家族识别（含顺序与否定例 `flashlight`）、
+autoTier 全部规则与两处例外、三种模式与 source、家族块最小偏移（含「其余家族无偏移」）、
+`resolveSpecialtyBlocks` 的选择、以及**渲染落地**三条（留空=完整块无家族行；
+gemini-flash 用精简块且不混入别家行；claude/kimi 各自正确）。
+
+---
+
+## 十二、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
