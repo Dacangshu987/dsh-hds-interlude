@@ -471,6 +471,29 @@ autoTier 全部规则与两处例外、三种模式与 source、家族块最小�
 `resolveSpecialtyBlocks` 的选择、以及**渲染落地**三条（留空=完整块无家族行；
 gemini-flash 用精简块且不混入别家行；claude/kimi 各自正确）。
 
+### 只剩一项：rc11 私聊回合跨群投递（crossConversationActions）
+
+**不是 N/A，是尚未立项的完整特性**。上游形态：
+
+- 配置：`allowCrossConversationMessages`、`maxCrossConversationActions`（默认 1，上限 5）；
+- 载荷：`availableGroupTargets`（她这一轮**可能**发消息的群目标清单）；
+- 提示词：`CROSS-CHANNEL DELIVERY: interaction is only the current private reply.
+  availableGroupTargets lists …`（私聊回复与跨频道投递是两件事）；
+- 服务：提交后执行跨会话投递（且合成动作在 Commit 前注入 `decision.crossConversationActions`）。
+
+**本仓落地要点（下一轮立项时按此实现）**：
+
+1. `interlude_say` 目前**只有 `text`** 一个参数、目标固定为当前绑定会话
+   （`deliverToIm` → `bindingFor(key, state, cfg)`）——跨群投递需要一个可选的
+   `target`（或独立的 `interlude_send_to` 工具）与「目标 → 绑定」的解析；
+2. 目标清单来自 `bindings.list(botId)`（本仓一个 bot 可绑多个会话，故可行），
+   需要一个白名单配置（对应上游的群白名单）与每轮上限；
+3. 投递路径要能**显式指定**目标绑定，而不是从会话 key 推导；
+4. 提示词侧按上游「私聊回复 ≠ 跨频道投递」的口径加一段，并补 round-trip 测试。
+
+> 之所以放到最后：它是这轮清单里唯一需要**新增投递目标语义**的项（其余都是
+> 在既有单目标路径上加约束或加事实），改动面比前面任何一项都大。
+
 ---
 
 ## 十二、验证基线
