@@ -40,6 +40,7 @@
 | **rc19 守卫默认值收紧** | `lib/repetition-guard.js` | 本仓守卫段末尾已有等价句「拿不准时，就只发一条。」（上游 `When unsure, make this reply a single bubble.`） |
 | **rc23 审计：due 批次失败整批退避** | `lib/index.js` + `lib/state.js` | `state.proactiveBackoffUntil`；模型这一轮什么都没写出来（`no-writeback`）→ 整批退避一个扫描周期，杜绝每周期重新生成的无界烧 token |
 | **rc23 审计：入站重放去重** | `lib/qq-im/inbound.js`（既有） | `DedupeWindow` 以 **messageId** 为键、TTL 10 分钟，覆盖「桌面超时-重放双写双回」；语义与上游私聊/群聊两侧一致 |
+| **rc6 QQ 合并转发读取（纯函数核 + 入站占位）** | `lib/forward-message.js` + `lib/qq-im/inbound.js` | 预算 30/8000/3、id 提取（元素 + CQ 码）、归一化渲染与截断标注、可注入 fetcher 的递归读取；入站把裸 `<forward>`/`[CQ:forward]` 转成 `[合并转发：id]` 占位 |
 
 ### ❌ 待移植（按建议优先级）
 
@@ -273,7 +274,46 @@ rc21 是**建立在该参数之上**的首条下限，因此先把模拟恢复�
 
 ---
 
-## 八、验证基线
+## 八、本轮移植详情：rc6 QQ 合并转发读取
+
+### 上游实现（`src/forward-message.ts`，188 行）
+
+| 上游 | 本仓落点 | 说明 |
+|---|---|---|
+| `forwardReadLimits`（默认 30 / 8000 / 3，夹取 1–100 / 500–32000 / 0–8） | `forwardReadLimits` | 逐字对齐（含上游 `clampInt` 的口径：`Number(null)===0` 走夹取而非回退） |
+| `extractForwardIds`（元素 `attrs`/`data` + `[CQ:forward,…]`；长度上限 512；去重） | `extractForwardIds` | 逐字对齐 |
+| `normalizeForwardMessages`（节点标题、发送者/QQ、段文字化、节点与字符预算、截断标注） | 同名函数 | 逐字对齐（含 `[合并转发内容｜节点数 N]`、`[节点 k｜昵称（QQ）｜类型]`、`[合并转发内容已按安全预算截断]`） |
+| `normalizeForwardSegments`（text/at/reply/forward/image/record/video/file/未知） | 同名内部函数 | 逐字对齐 |
+| `readForwardContent` + `fetchForwardNodes`（OneBot `get_forward_msg`，30s 超时、逐层递归、嵌套限 10 条） | 同名函数 + **可注入 fetcher** | 预算与递归语义保留；发请求改为宿主注入 |
+
+### DSH 侧适配（已在文档与代码注释记录）
+
+本仓 QQ 通道是**官方 SDK**，没有 `get_forward_msg`。因此取数做成可注入的
+`fetchNodes(id)`（与 `side-task.js` / `world-seeder.js` 同一模式）：
+未注入时 `readForwardContent` 退回**占位形态**并标 `failed: true`
+——正是上游读取失败时的降级，绝不把裸标记漏给模型。
+
+### 入站卫生（本轮一并做掉）
+
+`sanitizeAttachments` 此前只处理 img/record/video/file，`<forward>` 与
+`[CQ:forward,…]` 会**原样漏进上下文**（带 CDN/rkey 的标记正是这条清洗存在的原因）。
+现在两者都转成 `[合并转发：id]` / `[合并转发]` 占位，与其他附件共存时互不干扰。
+
+### 仍未接完的部分（下一轮）
+
+- 把 `fetchNodes` 真正接到通道上（宿主注入点 + 配置项 `forwardLimits`），
+  并在读取成功后把渲染文本**替换**占位、作为该条入站的事实正文；
+- 读取失败时的日志与健康计数（上游走 `reportOperation`）。
+
+### 测试
+
+`test/forward-message.test.mjs`（12 项）：预算默认与夹取、id 提取（元素/CQ/递归/去重/超长）、
+渲染（各段/节点上限/字符预算/嵌套深度/缺资源标识）、可注入取数（无 fetcher 降级、
+无 id 早退、fetcher 抛错、递归与剩余预算）、入站清洗占位。
+
+---
+
+## 九、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
