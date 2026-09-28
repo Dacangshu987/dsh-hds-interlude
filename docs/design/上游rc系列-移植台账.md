@@ -36,6 +36,8 @@
 | **rc23 世界事件播种器 纯函数核心** | `lib/world-seeder.js` | 运行配置夹取、提示词（逐字）、四道纯函数闸、防御解析、Jaccard 去重、执行器接缝 |
 | **rc23 世界事件播种器 M1（注入侧）** | `lib/world-seeder.js` + `lib/index.js` + `lib/state.js` | 事件表 `state.seededEvents`（含状态机）、到点排水 → `kind:'world-event'/actor:'system'` 条目入账本、pre-step 以「事实权威、反应自由」呈现给模型、`/interlude seeded` 命令 |
 | **rc23 世界事件播种器 M2（生成侧）** | `lib/world-seeder.js` + `lib/index.js` | 抖动跳过、频控、摘要级载荷、逐条采纳（含「high 每天至多 1 条」）、入库排期、`/interlude seeded generate` |
+| **rc21 首条发言打字时间下限 + 打字模拟** | `lib/qq-im/outbound.js` + `lib/qq-im/channel.js` + `lib/index.js` + `lib/schema.js` | `typingDelayMs`（上游公式 + 抖动）、`firstMessageTypingFloorMs`（以请求发起时刻为基准补足）、分段按字数等待、图片豁免；参数与上游默认一致（1s / 8cps / 12s / 0.3） |
+| **rc19 守卫默认值收紧** | `lib/repetition-guard.js` | 本仓守卫段末尾已有等价句「拿不准时，就只发一条。」（上游 `When unsure, make this reply a single bubble.`） |
 
 ### ❌ 待移植（按建议优先级）
 
@@ -189,7 +191,51 @@
 
 ---
 
-## 六、验证基线
+## 六、本轮移植详情：rc21 打字节奏 + rc19 守卫默认值
+
+### rc21 首条发言打字时间下限（含恢复打字模拟）
+
+**背景**：本仓此前在 schema 里显式标注「去除打字模拟」，只保留固定的
+`chunking.minIntervalMs`（条间隔 400ms）。而上游自 0.1.x 起就有打字模拟，
+rc21 是**建立在该参数之上**的首条下限，因此先把模拟恢复回来、再加下限。
+
+| 上游 | 上游值/公式 | 本仓落点 |
+|---|---|---|
+| `typingBaseDelaySeconds` | 1 | `chunking.typingBaseDelaySeconds` |
+| `typingCharactersPerSecond` | 8 | `chunking.typingCharactersPerSecond` |
+| `typingMaxDelaySeconds` | 12 | `chunking.typingMaxDelaySeconds` |
+| `typingJitterRatio` | 0.3 | `chunking.typingJitterRatio` |
+| 打字时长 | `clamp(base + 字数/cps, 0, max) × (1 + jitter×(2r−1))` | `typingDelayMs`（可注入随机源，便于测试） |
+| rc21 首条下限 | 以**叙事请求发起时刻**为基准补足 `typingDelay(首条)`；已超过则立即发；至多应用一次 | `firstMessageTypingFloorMs` + `deliverMessages({ requestStartedAt })`；基准取 `pendingTurns.get(key).startedAt` |
+| 打断 | 等待期间新用户消息可经 `shouldCancel` 打断 | 首条 floor 用 `interruptibleDelay(ms, signal)` 实现，被打断则整批作废 |
+
+**DSH 侧的三处刻意选择（均已在代码注释与本表记录）**：
+1. **图片豁免打字模拟**：图片不是「打出来的」，按空文本会回落到基础 1 秒，
+   把「图 + 文」整体拖慢（实测会把图片推出调用方的等待窗口）。图片只受
+   本地 `minIntervalMs` 约束。
+2. **分段等待不可打断**：保持 `deliverMessages` 原有语义（每条开头检查一次中止）。
+   若让分段等待也可打断，外层 signal 在打字期间中止会把整批剩余内容一起丢掉
+   ——这正是本轮引入又修掉的一个回归（见下）。
+3. **`minIntervalMs` 作为本地下限**：取 `max(minIntervalMs, typingDelay)`
+   （上游没有这一层，是本仓防平台限流的额外保护）。
+
+### rc19 守卫默认值
+
+上游 rc19 在 REPETITION GUARD 段末尾追加
+`When unsure, make this reply a single bubble.`。本仓守卫段末尾对应句为
+「拿不准时，就只发一条。」——**语义已等价**，无需改动。
+
+### 本轮踩到并修掉的回归（值得记下来）
+
+加打字模拟后 `test/verify-sticker-dispatch.mjs` 从 12/12 掉到 10/12
+（图片发不出去）。用 `git show HEAD:<file>` 逐文件二分定位到 `outbound.js`，
+再定位到两个原因：① 分段等待新增的「等待后中止检查」让外层 signal 中止时
+整批作废（含图片）；② 图片条目按空文本吃满基础 1 秒。两者都修掉后恢复 12/12
+（连跑 3 次稳定），并补了 `test/typing-floor.test.mjs`（9 项）钉住这些边界。
+
+---
+
+## 七、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
