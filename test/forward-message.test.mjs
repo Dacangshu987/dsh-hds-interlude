@@ -55,11 +55,15 @@ await check('元素形态：attrs / data 里的 id、res_id、forward_id 都能�
   assert.deepEqual(extractForwardIds([{ type: 'Forward', data: { id: 'A6' } }]), ['A6'])
 })
 
-await check('CQ 码形态 + 去重 + 超长 id 丢弃', () => {
+await check('CQ 码形态 + 字符串标签形态 + 去重 + 超长 id 丢弃', () => {
   assert.deepEqual(extractForwardIds('[CQ:forward,id=CQ1]'), ['CQ1'])
   assert.deepEqual(extractForwardIds('[CQ:forward,res_id=CQ2]'), ['CQ2'])
   assert.deepEqual(extractForwardIds('前缀[CQ:forward,id=CQ3]后缀'), ['CQ3'])
-  assert.deepEqual(extractForwardIds('[CQ:forward,id=X][CQ:forward,id=X]'), ['X'], '同一 id 只留一次')
+  // 字符串里的标签形态（SDK 有时把富文本原文直接给成字符串）
+  assert.deepEqual(extractForwardIds('看这个<forward id="T1"/>然后呢'), ['T1'])
+  assert.deepEqual(extractForwardIds('<forward res_id="T2"/>'), ['T2'])
+  assert.deepEqual(extractForwardIds("<forward forward_id='T3'/>"), ['T3'])
+  assert.deepEqual(extractForwardIds('[CQ:forward,id=X][CQ:forward,id=X]<forward id="X"/>'), ['X'], '同一 id 只留一次')
   assert.deepEqual(extractForwardIds(`[CQ:forward,id=${'z'.repeat(600)}]`), [], '超 512 字丢弃')
   assert.deepEqual(extractForwardIds('没有转发'), [])
   assert.deepEqual(extractForwardIds(undefined), [])
@@ -193,6 +197,53 @@ await check('入站清洗：裸转发标记不漏进上下文（带 id 时保留
   // 与其他附件共存时互不干扰
   const mixed = sanitizeAttachments('<img src="http://cdn/x"/><forward id="F2"/><file name="a.pdf"/>')
   assert.equal(mixed, '[图片][合并转发：F2][文件：a.pdf]')
+})
+
+/* ───────────────── E. 入站读取回路（占位 → 真实正文） ───────────────── */
+
+await check('applyForwardRead：无转发资源 → 原样返回（零开销）', async () => {
+  const { applyForwardRead } = await import('../lib/qq-im/inbound.js')
+  let called = false
+  const out = await applyForwardRead('普通消息', { content: '普通消息' }, {
+    readForward: async () => { called = true; return { ok: true, content: 'x' } },
+  })
+  assert.equal(out, '普通消息')
+  assert.equal(called, false, '没有转发资源就不该调取数通道')
+})
+
+await check('applyForwardRead：无通道 → 保留占位并记 debug；读取成功 → 替换占位', async () => {
+  const { applyForwardRead } = await import('../lib/qq-im/inbound.js')
+  const logs = []
+  const message = { content: '看这个<forward id="F1"/>然后呢' }
+  const text = '看这个[合并转发：F1]然后呢'
+  // ① 无通道
+  const kept = await applyForwardRead(text, message, { log: (level, m) => logs.push(`${level}:${m}`) })
+  assert.equal(kept, text)
+  assert.ok(logs.some((l) => l.startsWith('debug:')), '应记一条 debug')
+  // ② 有通道 → 替换（保持位置）
+  const replaced = await applyForwardRead(text, message, {
+    readForward: async ({ ids, limits }) => {
+      assert.deepEqual(ids, ['F1'])
+      assert.equal(limits.maxNodes, 30, '应带上默认预算')
+      return { ok: true, content: '[合并转发内容｜节点数 1]\n[节点 1｜小鹿（1）]\n在吗' }
+    },
+  })
+  assert.ok(replaced.startsWith('看这个[合并转发内容'), replaced)
+  assert.ok(replaced.endsWith('然后呢'), '占位两侧的原文必须保留')
+  assert.ok(replaced.includes('在吗'))
+})
+
+await check('applyForwardRead：读取失败/抛错 → 保留占位（不阻断回合）', async () => {
+  const { applyForwardRead } = await import('../lib/qq-im/inbound.js')
+  const message = { content: '<forward id="F2"/>' }
+  const text = '[合并转发：F2]'
+  const failed = await applyForwardRead(text, message, { readForward: async () => ({ ok: false, error: 'no-fetcher' }) })
+  assert.equal(failed, text)
+  const threw = await applyForwardRead(text, message, { readForward: async () => { throw new Error('接口超时') } })
+  assert.equal(threw, text)
+  // 直接返回渲染文本也接受
+  const direct = await applyForwardRead(text, message, { readForward: async () => '渲染好的正文' })
+  assert.equal(direct, '渲染好的正文')
 })
 
 console.log(`\n合并转发读取：通过 ${passed} 项，失败 ${failed} 项`)
