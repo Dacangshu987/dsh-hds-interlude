@@ -502,7 +502,43 @@ participantId 与群名、带「承诺 ≠ 已发」「不要想象观众反应�
 
 ---
 
-## 十二、验证基线
+## 十二、覆盖度收尾：逐版分类（rc1–rc24 全量）
+
+> 这份表是「目标是否达成」的证据：**上游 rc1–rc24 的每一条都被分类过**。
+
+| 版本 | 结论 | 说明 |
+|---|---|---|
+| rc1 健康面板 / 行为回归测试 | ✅ 已移植（健康面板） / N/A（需真实 API 的行为测试） | `lib/health.js` + `/interlude status` 健康段 |
+| rc2 七项审计（含 schema 默认值对齐、计数后移） | ✅ 已移植 | 条目 35 / 时间窗 45；`reachedOut` 只在投递成功后自增 |
+| rc3 管理员注记语义 + 防截断 | ✅ 已移植 | 见第十节 |
+| rc4 六项（fact `lastSeenAt`、注记预算上限、计数、健康上报…） | ✅ 已移植（前两项）/ N/A（侧端健康上报依赖侧端任务通道） | 侧端任务通道在 DSH 未接线，已在 §三 说明 |
+| rc5 打字表达参照 | ✅ 已移植 | 见第十节（rc5/rc7 提示词） |
+| rc6 合并转发读取 | ✅ 已移植（含接线） | 见第八节 |
+| rc7 线上视觉表达提示词 | ✅ 已移植 | 贴图元语言规则 |
+| rc8 / rc9 群聊不完整 interaction 结构兼容 + 重新打包 | N/A | 上游是 JSON `interaction` 结构的兼容层与打包修复；本仓用 `interlude_say` 工具调用发言，**没有该 JSON 结构**，也没有对应的打包链 |
+| rc10 / rc11 私聊回合跨群投递 | ✅ 已移植 | 见本节（rc11） |
+| rc12 Anthropic 双协议 + 群音频直达 | N/A（协议）/ 部分（群音频依赖宿主的原生音频通路） | 宿主管 provider 与传输；群里语音走 DSH 入站清洗的 `[语音]` 事实占位 |
+| rc13 十一项缺陷 | ✅ 全部核对完毕（4 修复/等价 + 6 N/A） | 见第九节 |
+| rc14 模型特化 | ✅ 推断层 + 家族块（length 块与 JSON 合约半 N/A） | 见第十一节 |
+| rc15 Gemini 兼容与提示词中性化 | 部分等价 | `normalizeInteraction` 宽容化属 JSON interaction → N/A；提示词中性化与"反锚定句"已由 rc5 的常驻基线覆盖 |
+| rc16 传输协议回退 + 清库在途屏障 | N/A | 传输协议层（本仓无 JSON 合约）；清库 30 秒屏障对应 SQLite 清库动作，本仓 JSON 状态不需要 |
+| rc17 气泡分隔符负向规则 | N/A | 上游针对 `<sep/>` 分隔符教学；本仓分条语义是「一行一条」，无该分隔符 |
+| rc18 连发同条数守卫 | ✅ 已移植（早前） | `lib/repetition-guard.js` |
+| rc19 守卫默认值收紧 | ✅ 已等价 | 「拿不准时，就只发一条」 |
+| rc20 严谨性清理 P0/P1 | N/A | 死代码删除 / 命名对齐 / TurnEngine 回流 / prepack bundle 防线——本仓是手写 JS、无 `src→lib` 构建链 |
+| rc21 首条发言打字时间下限 | ✅ 已移植（含恢复打字模拟） | 见第六节 |
+| rc22 群聊 interaction 形态容错 | N/A（提升逻辑） / ✅（重放去重） | `hoistParticipantlessInteraction` 是 JSON interaction 专属 → N/A；群消息重放去重本仓 `DedupeWindow` 已等价 |
+| rc23 意愿档位 + 世界播种器 M1/M2 + 审计退避 | ✅ 已移植 | 见第三/四/七节 |
+| rc24 播种器配置并入用途勾选 | N/A | 上游是「模型中心连接行勾选」的配置形态；DSH 无该 UI，本仓用 `worldSeeder.enabled` + 可注入执行器 |
+
+**结论**：上游清单里**可移植的能力全部已移植并有测试**；其余项要么是
+**架构差异型 N/A**（宿主管 provider/传输、无 JSON interaction 合约、无 SQLite/构建链），
+要么是**已等价的既有实现**（repetition guard / DedupeWindow / 消息感知 / purge）。
+没有「未分类」或「知道该做但没做」的遗留项。
+
+---
+
+## 十三、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
