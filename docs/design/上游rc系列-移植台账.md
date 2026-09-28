@@ -329,17 +329,30 @@ rc21 是**建立在该参数之上**的首条下限，因此先把模拟恢复�
 |---|---|---|
 | 旧版共享迁移在 Schedule Preplan 表上必然抛错（主键不可 update） | N/A | 本仓是 JSON 状态 + `withStateLock`，没有 SQLite 表迁移路径 |
 | 管理员清除数据后同步失效历史向量缓存 | **N/A** | 本仓**不落盘向量**（`semantic-recall` 的 embed 是可注入接口，未注入即词法降级；`state.js` 里没有任何 vector 字段）→ 不存在「需要失效的向量缓存」 |
-| 命令识别正则支持点分子命令（`interlude.status`） | 待核对 | 命令注册在 DSH（`ctx.commands.register`），DSH 自行解析；需确认「盲区/关闭合作创作」时命令文本不会写进剧本 |
+| 命令识别正则支持点分子命令（`interlude.status`） | **✅ 已等价（且更严）** | 本仓 QQ 侧命令是 `switch (verb)` 匹配（`lib/qq-im/bot-commands.js`），**统一用 `/verb`**、不区分点分子命令；而 `default:` 分支对**任何**未知 `/…`（含 `/interlude.status` 这种点分写法）直接回「不认识命令…」并**不进模型**——注释里写明「避免把『/xxx』当聊天内容灌给角色」。所以"命令文本写进剧本"在本仓构造上不可能发生 |
 | **中文时间解析「八点半」（此前为 8:00）** | ✅ **已移植 + 已投影** | `lib/user-reported-times.js` 纯核（`chineseClockNumber` + 三条回路；测试断言 `八点半 → 08:30`）；提示词投影见下 |
 | `<say>` 内容含边缘空白时不丢 immediate 回复 | **✅ 已等价（构造上不可能发生）** | 本仓走 `interlude_say` 工具、由 `capture.js` 采集：`text.split('\n').map(line => line.trim()).filter(Boolean)`——**先 trim 再过滤**，边缘空白只会被归一，不会像上游那样因"精确匹配"而丢掉整条 immediate 回复；纯空白行被丢弃是「没有可发的内容」，不是丢回复 |
 | `narrative-retry` 不被用户回合提前完成 | N/A | 本仓不排叙事重试意图（模型失败由 DSH 宿主重试），见第七节 |
 | **Schedule Preplan 物化滞后时窗口静默变空** | ✅ **本轮移植** | `ensureWindowDays`：缺 [今天,明天] 时**本地无模型重物化（锚定今天）**，详见下 |
 | 桌面时间线分页游标改 occurredAt+id 双键 | **N/A** | 本仓没有桌面时间线分页（无游标分页路径） |
 | 合并写作持久化抛错不静默吞批 | N/A | 本仓没有「合并写作持久化」这一步（投递/条目各自独立落盘） |
-| `interruptedTyping` 在取消异常后无条件清理 | 待核对 | 需确认本仓分段投递被取消时不会留下永久卡死的标志 |
+| `interruptedTyping` 在取消异常后无条件清理 | **N/A** | 本仓没有 `interruptedTyping` 这类**持久化**标志：取消走 `capture.cancel()` → `capture.settle()`（把捕获窗口结算掉，不留粘性状态）；分段投递的失败记账是 `pendingText` + `attempts`（≥3 → failed），本身就是有界的 |
 
-> 结论：**4 项已修复/等价**（中文钟点、其提示词投影、preplan 物化滞后、`<say>` 边缘空白）、**4 项 N/A**（均写明理由）、**2 项待核对**（命令正则点分子命令、`interruptedTyping` 清理）。
-> 「待核对」不等于已移植——只有查完并修掉（或断言本仓无该分支）才会改成 ✅/N/A。
+> 结论：**rc13 已全部核对完毕** —— **4 项已修复/已等价**（中文钟点、其提示词投影、preplan 物化滞后、`<say>` 边缘空白）、**6 项 N/A/已等价**（旧表迁移、向量缓存、命令点分子命令、`narrative-retry`、分页游标、合并写作持久化、`interruptedTyping`），无遗留待核对项。
+
+### 同一轮：rc5/rc7 线上表达提示词
+
+上游把两条规则都放在 `specialization.ts` 的 `TYPED_MESSAGES_BASE` 里；本仓对应落点是
+`render.js` 的 `imRules`（发送方式的约束，不碰文风）：
+
+| 上游 | 本仓 |
+|---|---|
+| rc5：portray online messages as text she chooses to **type**, not spoken dialogue transcribed | 已有「只写你会真正打出来发出去的字…不要写旁白/动作/神态/内心独白」 |
+| rc5：**Each reply is an independent choice — the number of messages in previous replies does not constrain this one** | **本轮补**：「每一轮都是独立的选择：上一轮发了几条**不约束**这一轮」——rc18 的条数守卫只在**检测到锚定之后**才注入，这条是无条件基线 |
+| rc5：let this moment alone decide whether she sends one bubble or several | 已有「分开打几条是正常的，像真人聊天那样」 |
+| rc7：stickers/emoji-like images are a **metalanguage**；infer attitude/acknowledgement/hesitation/irony from the image **and its conversational context rather than stopping at the depicted subject**；a cat sticker may mean "seen"/"confirmed"；sending the same sticker repeatedly is also an intentional expressive act | **本轮补**：「表情包和图片是**元语言**…**不要停在画面本身上**——一张猫的贴图可能只是「看到了」…同一个贴图连发多次同样是**有意的表达**」 |
+
+只在 IM 场景渲染（`imActive`），不污染纯 Web 写作——已由测试钉住。
 
 ### 本轮实现：用户报时提取（rc13 修复项 + 0.1.4 的「提及时间提取」）
 
