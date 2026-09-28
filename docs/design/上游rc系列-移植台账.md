@@ -320,7 +320,45 @@ rc21 是**建立在该参数之上**的首条下限，因此先把模拟恢复�
 
 ---
 
-## 九、验证基线
+## 九、本轮移植详情：rc13 十一项缺陷逐条核对
+
+| 上游 rc13 缺陷 | 本仓结论 | 依据 / 理由 |
+|---|---|---|
+| 旧版共享迁移在 Schedule Preplan 表上必然抛错（主键不可 update） | N/A | 本仓是 JSON 状态 + `withStateLock`，没有 SQLite 表迁移路径 |
+| 管理员清除数据后同步失效历史向量缓存 | 待核对 | 需确认 `semantic-recall` 是否在 `purge`/清库时丢弃缓存向量（下一轮逐条查） |
+| 命令识别正则支持点分子命令（`interlude.status`） | 待核对 | 命令注册在 DSH（`ctx.commands.register`），DSH 自行解析；需确认「盲区/关闭合作创作」时命令文本不会写进剧本 |
+| **中文时间解析「八点半」（此前为 8:00）** | ✅ **本轮移植** | `lib/user-reported-times.js` 的 `chineseClockNumber` + 三条提取回路；测试断言 `八点半 → 08:30` |
+| `<say>` 内容含边缘空白时不丢 immediate 回复 | 待核对 | 本仓走 `interlude_say` 工具（无 `<say>` XML）；需确认文本 trim 后不会丢回复 |
+| `narrative-retry` 不被用户回合提前完成 | N/A | 本仓不排叙事重试意图（模型失败由 DSH 宿主重试），见第七节 |
+| Schedule Preplan 物化滞后时窗口静默变空 | 待核对 | 需确认本仓 `preplan.js` 是否存在「物化天缺失 → 窗口为空」的同类分支 |
+| 桌面时间线分页游标改 occurredAt+id 双键 | 待核对 | 需确认本仓是否有分页游标及其排序键 |
+| 合并写作持久化抛错不静默吞批 | N/A | 本仓没有「合并写作持久化」这一步（投递/条目各自独立落盘） |
+| `interruptedTyping` 在取消异常后无条件清理 | 待核对 | 需确认本仓分段投递被取消时不会留下永久卡死的标志 |
+
+> 结论：**1 项已修复**（中文钟点，本轮）、**2 项 N/A**（已写明理由）、**6 项待核对**（已登记，下一轮逐条查）。
+> 「待核对」不等于已移植——只有查完并修掉（或断言本仓无该分支）才会改成 ✅/N/A。
+
+### 本轮实现：用户报时提取（rc13 修复项 + 0.1.4 的「提及时间提取」）
+
+| 上游 | 本仓落点 |
+|---|---|
+| `chineseClockNumber`（十/十几/二十几，坏值 undefined） | 同名导出（逐字对齐） |
+| 数字钟点回路（`[:：.]` / `点` / `N点M` / `N点半`；下午晚上 +12；**裸钟点取离当前时钟更近者**） | 同名回路 |
+| 时段词锚点（8/9/12/15/18/20） | `PERIOD_HOURS` |
+| **中文数字钟点回路（rc13 修复）** | 同名回路 |
+| `{localTime, relation, statement}` + 去重键「钟点+原话」+ 上限 4 | 同名形状与口径 |
+| `localClockMinutes` / `calendarDayKey` | 复用本仓 `lib/clock.js`（已有，含 `hourCycle: 'h23'`，无 12 小时制歧义） |
+
+与 `lib/commitment.js` 的分工（互不替代）：那边解析「多久之后」的相对时长并判断
+是否构成承诺；这边只抽「对方几点」的客观事实，**不做任何推测**（上游口径：
+a small factual aid, not an attempt to infer every temporal expression）。
+
+**仍未接完**：把提取结果投影进提示词（`state.userReportedTimes` + 幕间块渲染 +
+用户消息到达时写入）。纯核与口径已就位并有测试，接线属下一轮。
+
+---
+
+## 十、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
