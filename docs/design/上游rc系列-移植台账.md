@@ -299,17 +299,24 @@ rc21 是**建立在该参数之上**的首条下限，因此先把模拟恢复�
 `[CQ:forward,…]` 会**原样漏进上下文**（带 CDN/rkey 的标记正是这条清洗存在的原因）。
 现在两者都转成 `[合并转发：id]` / `[合并转发]` 占位，与其他附件共存时互不干扰。
 
-### 仍未接完的部分（下一轮）
+### 接线（本轮补完）
 
-- 把 `fetchNodes` 真正接到通道上（宿主注入点 + 配置项 `forwardLimits`），
-  并在读取成功后把渲染文本**替换**占位、作为该条入站的事实正文；
-- 读取失败时的日志与健康计数（上游走 `reportOperation`）。
+- 通道注入点：`ctx.__qqForwardFetch(id) => Promise<nodes>`（与 `__worldSeederExecute` 同模式）；
+  `channel.js` 的 `makeForwardReader()` 把它接上预算与归一化，未注入则返回 `undefined`；
+- `handleInbound` 新增第 ①' 步：`applyForwardRead(text, message, {readForward, limits, log})`
+  —— 有资源才调用（零开销）、读取成功**按 id 精确替换占位**（保持用户发送时的位置）、
+  两侧原文保留；失败/抛错保留占位并记 warn，**不阻断回合**；无通道记 debug；
+- 配置：`im.forwardLimits { maxNodes, maxCharacters, maxDepth }`（默认与上游一致）；
+- 补齐一处保真缺口：`extractForwardIds` 原先只认**元素对象**与 **CQ 码字符串**，
+  而 SDK 常把富文本原文给成字符串（`<forward id="…"/>`）——上游用真实 HTML 解析器
+  （`h.parse`），本仓现补标签正则，覆盖 `id` / `res_id` / `forward_id` 三种属性与引号形态。
 
 ### 测试
 
-`test/forward-message.test.mjs`（12 项）：预算默认与夹取、id 提取（元素/CQ/递归/去重/超长）、
+`test/forward-message.test.mjs`（15 项）：预算默认与夹取、id 提取（元素/CQ/字符串标签/递归/去重/超长）、
 渲染（各段/节点上限/字符预算/嵌套深度/缺资源标识）、可注入取数（无 fetcher 降级、
-无 id 早退、fetcher 抛错、递归与剩余预算）、入站清洗占位。
+无 id 早退、fetcher 抛错、递归与剩余预算）、入站清洗占位、**读取回路**
+（无资源零开销、无通道保留占位、成功替换且保留两侧原文、失败与抛错不阻断）。
 
 ---
 
