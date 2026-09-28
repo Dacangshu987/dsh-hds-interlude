@@ -1151,5 +1151,35 @@ await check('配额用光后，角色答应过的提醒仍然发得出去（承�
   await host.ctx.stop?.()
 })
 
+/**
+ * 整批退避（移植自上游 1.0.1-rc23 的审计修复）：
+ * 到点批次失败一次后整批让位一个扫描周期，避免「每个扫描周期都重新唤起模型」
+ * 的无界烧 token。这里直接钉住这道闸（退避中不开口 / 过期后恢复开口）。
+ */
+await check('退避窗口内：到点待办整批让位，不投递也不唤起模型', async () => {
+  const sessionId = 'session-cold-backoff'
+  const host = await bootWithPendingIntent({
+    sessionId,
+    integration: { conversationKey: 'c2c:USER_BACKOFF' },
+    statePatch: { proactiveBackoffUntil: Date.now() + 60_000, proactiveBackoffReason: 'no-writeback' },
+  })
+  const delivered = await waitFor(() => host.sent.length > 0, 1200)
+  assert.equal(delivered, false, '退避窗口内不该有任何投递')
+  assert.equal(host.followups?.length ?? 0, 0, '退避窗口内不该唤起模型（避免白烧一轮上下文）')
+  await host.ctx.stop?.()
+})
+
+await check('退避已过期：到点待办照常开口（闸不会永久粘住）', async () => {
+  const sessionId = 'session-cold-backoff-expired'
+  const host = await bootWithPendingIntent({
+    sessionId,
+    integration: { conversationKey: 'c2c:USER_BACKOFF2' },
+    statePatch: { proactiveBackoffUntil: Date.now() - 60_000, proactiveBackoffReason: 'no-writeback' },
+  })
+  const delivered = await waitFor(() => host.sent.length > 0, 6000)
+  assert.ok(delivered, '退避过期后应照常开口')
+  await host.ctx.stop?.()
+})
+
 console.log(`\n冷会话主动开口：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)

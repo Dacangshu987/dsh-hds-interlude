@@ -38,6 +38,8 @@
 | **rc23 世界事件播种器 M2（生成侧）** | `lib/world-seeder.js` + `lib/index.js` | 抖动跳过、频控、摘要级载荷、逐条采纳（含「high 每天至多 1 条」）、入库排期、`/interlude seeded generate` |
 | **rc21 首条发言打字时间下限 + 打字模拟** | `lib/qq-im/outbound.js` + `lib/qq-im/channel.js` + `lib/index.js` + `lib/schema.js` | `typingDelayMs`（上游公式 + 抖动）、`firstMessageTypingFloorMs`（以请求发起时刻为基准补足）、分段按字数等待、图片豁免；参数与上游默认一致（1s / 8cps / 12s / 0.3） |
 | **rc19 守卫默认值收紧** | `lib/repetition-guard.js` | 本仓守卫段末尾已有等价句「拿不准时，就只发一条。」（上游 `When unsure, make this reply a single bubble.`） |
+| **rc23 审计：due 批次失败整批退避** | `lib/index.js` + `lib/state.js` | `state.proactiveBackoffUntil`；模型这一轮什么都没写出来（`no-writeback`）→ 整批退避一个扫描周期，杜绝每周期重新生成的无界烧 token |
+| **rc23 审计：入站重放去重** | `lib/qq-im/inbound.js`（既有） | `DedupeWindow` 以 **messageId** 为键、TTL 10 分钟，覆盖「桌面超时-重放双写双回」；语义与上游私聊/群聊两侧一致 |
 
 ### ❌ 待移植（按建议优先级）
 
@@ -235,7 +237,43 @@ rc21 是**建立在该参数之上**的首条下限，因此先把模拟恢复�
 
 ---
 
-## 七、验证基线
+## 七、本轮移植详情：rc22/rc23 审计项
+
+上游 rc23 的「全量审计修复（7 项）」逐条对照本仓，结论如下：
+
+| 上游审计项 | 本仓结论 | 依据 |
+|---|---|---|
+| Fix#10 守卫回归（committed 标志移到持久化成功后） | N/A | 本仓没有该 `committed` 标志；投递记账在 `deliverToIm` 返回 `ok` 之后才写 `state`（本来就「先成功再落账」） |
+| 群消息桥接重放去重（与私聊对齐） | ✅ 已等价 | `DedupeWindow` 以 messageId 为键、TTL 10 分钟；私聊与群聊走同一入口 |
+| 用户回合成功后取消遗留 narrative-retry | **N/A（架构差异）** | 上游有 `interlude_intent(type='narrative-retry')` + `narrativeRetryDelaySeconds/MaxAttempts`；**本仓不排叙事重试意图**（模型请求失败由 DSH 宿主重试），因此不存在「遗留重试到期再跑一轮 → 重复回复」这一缺陷类 |
+| due 路径参与者状态检查 + 暂停不再反向排重试 | ✅ 已等价 | 暂停：`handleSession` 经 `isRoleplayState` 直接返回，不排重试；参与者：批次派发前必须 `bindingFor` 命中（无绑定则不唤醒） |
+| **due 批次失败整批退避一个扫描周期** | ✅ **本轮新实现** | 见下 |
+| 空白 delayed content 丢弃消息事件而非拒绝整个 commit | ✅ 已等价 | 出站 `deliverMessages` 先 `normalizeItem` 再 filter（空串/无效图片直接丢），不会因一条空内容整批失败 |
+| Anthropic SSE 坏帧容错 | N/A | 本仓不经手 SSE（宿主管传输） |
+
+### 本轮新实现：due 批次失败整批退避
+
+- 新增 `state.proactiveBackoffUntil` / `proactiveBackoffReason`（防御归一：非法值回 `null`，
+  过期值自然放行，**不会永久粘住**）。
+- `handleProactive` 在选出批次目标后先过这道闸：退避窗口内直接返回，不唤醒模型。
+- 触发点**精确到「会重新生成」的那一种失败**：`delivered.error === 'no-writeback'`
+  （模型这一轮什么都没写出来）。其余失败（有 `pendingText` 的投递失败）本仓本来就
+  「重发同一段、不重新生成」，不属于烧 token，故不触发退避。
+- 成功开口时（`settleBundled`）清除退避。
+
+> 实现时的一处教训：第一版把条件写成「没有 pendingText 就退避」，结果**拦截了**
+> 原有的「保留草稿待重发」分支（`proactive-cold` 的
+> 「投递失败重试时不重新生成内容」用例立刻变红，状态卡在 `delivering`）。
+> 条件必须收窄到 `no-writeback` 这一种。
+
+### 测试
+
+- `test/proactive-cold.test.mjs` 新增 2 项：退避窗口内**不投递也不唤起模型**；
+  退避过期后照常开口（闸不粘住）。
+
+---
+
+## 八、验证基线
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
