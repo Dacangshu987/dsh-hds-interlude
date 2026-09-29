@@ -23,6 +23,8 @@ process.env.DSH_HOME = TEST_HOME
 
 const plugin = await import('../lib/index.js')
 const { saveState, loadState, emptyState } = await import('../lib/state.js')
+const { BindingStore } = await import('../lib/qq-im/binding.js')
+const { clearImBindingCache } = await import('../lib/im-binding.js')
 
 const PRESET = 'preset-phase23'
 fs.mkdirSync(path.join(TEST_HOME, '.agent-presets', PRESET), { recursive: true })
@@ -38,7 +40,7 @@ const check = async (label, fn) => {
 console.log('Phase 2/3 端到端')
 
 /** 起一个真插件实例。events 会作为会话日志（供记账）。 */
-async function boot({ events = [], statePatch = {}, keepState = false } = {}) {
+async function boot({ events = [], statePatch = {}, keepState = false, bindIm = false } = {}) {
   // keepState：保留上一次写下的状态文件，用于「盘上的事实能否被读回来」这类用例。
   // 默认清盘——多数用例需要一个干净的起点，残留会串台。
   if (!keepState) fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
@@ -66,7 +68,10 @@ async function boot({ events = [], statePatch = {}, keepState = false } = {}) {
       replace: async () => {},
     }),
   })
-  ctx.provide('webServer', { register: () => {} })
+  // webServer 路由要**留住 handler**：状态路由是外部读取健康指标的唯一入口，
+  // 留住它才能端到端验证「token 用量 → 健康指标 → /status」这条链。
+  const routes = new Map()
+  ctx.provide('webServer', { register: (route) => { routes.set(route.path, route.handler); return () => {} } })
   ctx.provide('credentials', { resolve: async () => undefined })
   ctx.provide('sessionController', { async resolveAgent() { return agent } })
 
@@ -79,7 +84,26 @@ async function boot({ events = [], statePatch = {}, keepState = false } = {}) {
   Object.assign(state, statePatch)
   saveState(SESSION, state)
 
-  const fiber = ctx.plugin(plugin, plugin.Config({ timeZone: 'Asia/Shanghai', runtime: { restWindows: [] } }))
+  // bindIm：把该会话绑到一个 QQ 机器人上。
+  // 「写了正文却没调 interlude_say」这条诊断**只在真有投递目标时**才成立
+  // （见 index.js 的 deliveryExpected）——没有绑定时角色本来就在 DSH 会话里
+  // 正常写回复，不该被计成结构化缺失，也不该刷日志。
+  //
+  // 注意：绑定表是**落到 TEST_HOME 的文件**（integrations/dsh-qq-im/bindings.json），
+  // 上一个用例写下的会留到下一个——所以未绑定的用例必须先把它删掉，否则两个用例
+  // 会互相串台（实测踩过）。
+  fs.rmSync(path.join(TEST_HOME, 'integrations', 'dsh-qq-im'), { recursive: true, force: true })
+  if (bindIm) {
+    const store = new BindingStore({ home: TEST_HOME })
+    store.set({ conversationKey: 'c2c:USER1', sessionId: SESSION, botId: 'qq_test', name: '测试' })
+  }
+  clearImBindingCache()
+
+  const fiber = ctx.plugin(plugin, plugin.Config({
+    timeZone: 'Asia/Shanghai',
+    runtime: { restWindows: [] },
+    ...(bindIm ? { im: { enabled: true, bots: [{ botId: 'qq_test', appId: 'test-app', secretRef: 'X', alias: '', agentPreset: PRESET }] } } : {}),
+  }))
   if (fiber && typeof fiber.then === 'function') await fiber
 
   const exec = { agent }
@@ -96,7 +120,7 @@ async function boot({ events = [], statePatch = {}, keepState = false } = {}) {
       async () => ({ kind: 'enter', messages: [] }))
     return decision ? decision.messages.map(m => m.content.map(b => b.text).join('')).join('\n') : ''
   }
-  return { ctx, registered, exec, state, runPreStep, runCommand }
+  return { ctx, registered, exec, state, runPreStep, runCommand, routes }
 }
 
 const USER_EVENT = text => ({ type: 'user/message', time: 1_700_000_000_000, data: { content: [{ type: 'text', text }] } })
@@ -482,14 +506,18 @@ await check('续写书签：注入里要求「不要重述」且只给指针', a
 /* ============================ ⑧ 消息感知（beta10） ============================ */
 
 /** 直接往会话事件流里发一轮「用户来消息 → 模型写正文 → 回合结束」。 */
-async function emitTurn(ctx, { body, say = null } = {}) {
+async function emitTurn(ctx, { body, say = null, usage = null } = {}) {
   const logs = []
   const origLog = console.log
   console.log = (...args) => { logs.push(args.map(String).join(' ')); origLog(...args) }
   try {
     ctx.emit('session/event', { id: SESSION }, { type: 'user/message', data: { content: [{ type: 'text', text: '在吗' }] } })
-    if (body) {
-      ctx.emit('session/event', { id: SESSION }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: body }] } } })
+    if (body || usage) {
+      ctx.emit('session/event', { id: SESSION }, {
+        type: 'assistant/message',
+        // usage：DSH 的 assistant/message 事件带 TokenUsage（inputTokens / cacheReadTokens…）
+        data: { message: { content: body ? [{ type: 'text', text: body }] : [] }, ...(usage ? { usage } : {}) },
+      })
     }
     if (say) {
       ctx.emit('session/event', { id: SESSION }, { type: 'tool/call', data: { name: 'interlude_say', arguments: JSON.stringify({ text: say }) } })
@@ -502,10 +530,35 @@ async function emitTurn(ctx, { body, say = null } = {}) {
   return logs.join('\n')
 }
 
+await check('assistant/message 的 usage 接进健康指标（缓存命中率不再是死数据）', async () => {
+  const { ctx, routes } = await boot({ events: [] })
+  const statusRoute = routes.get('/api/hds-interlude/status')
+  assert.ok(statusRoute, '状态路由应已注册')
+  // 造一发「有用量」的助手消息：输入 1000、其中命中缓存 400。
+  await emitTurn(ctx, { body: '在的。', usage: { inputTokens: 1000, outputTokens: 20, cacheReadTokens: 400 } })
+  let payload = null
+  const fakeRes = { writeHead() {}, end: (body) => { payload = JSON.parse(body) } }
+  await statusRoute({ method: 'GET', url: '/api/hds-interlude/status' }, fakeRes)
+  assert.ok(payload && payload.ok, '状态路由应返回 JSON')
+  const h = payload.value.health
+  assert.equal(h.inputTokens, 1000, `输入 token 应被记录，实际 ${h.inputTokens}`)
+  assert.equal(h.cachedTokens, 400, `缓存读 token 应被记录，实际 ${h.cachedTokens}`)
+  assert.ok(Math.abs(h.cacheHitRate - 0.4) < 1e-9, `缓存命中率应为 0.4，实际 ${h.cacheHitRate}`)
+  await ctx.stop?.()
+})
+
 await check('写了正文却没调工具 → 有诊断（可能把回复写成了正文）', async () => {
-  const { ctx } = await boot({ events: [] })
+  // 必须有 IM 绑定：那才代表「本来就该把这句话发出去」。
+  const { ctx } = await boot({ events: [], bindIm: true })
   const logs = await emitTurn(ctx, { body: '（她看了一眼消息，没动。）' })
   assert.match(logs, /写了正文但未调 interlude_say/, `应有诊断：\n${logs}`)
+  await ctx.stop?.()
+})
+
+await check('没有 IM 绑定 → 不诊断、不计缺失（角色本来就在 DSH 里正常回复）', async () => {
+  const { ctx } = await boot({ events: [], bindIm: false })
+  const logs = await emitTurn(ctx, { body: '（她看了一眼消息，没动。）' })
+  assert.doesNotMatch(logs, /写了正文但未调 interlude_say/, `无绑定不该诊断：\n${logs}`)
   await ctx.stop?.()
 })
 
@@ -526,3 +579,4 @@ await check('纯沉默（什么都没写）→ 没有诊断（beta10 授予的�
 console.log(ok ? '\n✅ Phase 2/3 端到端通过' : '\n❌ 有问题')
 fs.rmSync(TEST_HOME, { recursive: true, force: true })
 process.exit(ok ? 0 : 1)
+
