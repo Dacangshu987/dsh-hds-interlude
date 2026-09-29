@@ -103,6 +103,40 @@ console.log('认时间点：只认明确的将来时间，不乱猜')
 
 /* -------------------------------------------- 二、线上那句原话必须被认出 */
 
+/* ------------------------ 二之一、逐句判定：不得跨句凑成承诺（线上误记回归） */
+
+console.log('\n逐句判定（防跨句误记）')
+await check('跨句不算承诺：时间点与「我」分处两句时必须拒', () => {
+  // 线上实例 i3：模型引述**用户**的问句，曾被误记成"她答应过的事"。
+  assert.equal(detectCommitment('那你明天不上班了，干嘛去'), undefined, '用户的问句不该被当成承诺')
+  // 线上实例 i17：纯旁白，句中有「我」也有「明天」，但不是她答应要做的事。
+  assert.equal(
+    detectCommitment('那两条消息就那样孤零零地躺在对话框里，等着我明天醒了才看得见'),
+    undefined,
+    '旁白不该被当成承诺',
+  )
+  // 分号也要切句：「行吧；三分钟后见」里的「我」若在别的分句里不该被凑进来。
+  assert.equal(detectCommitment('我先睡了；他三分钟后要打电话'), undefined, '跨分号不该凑成承诺')
+})
+
+await check('同一句里的真承诺仍要认出（含「三分钟后见」）', () => {
+  const a = detectCommitment('行\n\n三分钟后喊你\n\n你先回我')
+  assert.ok(a, '「三分钟后喊你」应被认出')
+  assert.equal(a.minutes, 3)
+  const b = detectCommitment('我就知道\n\n行吧，三分钟后见\n\n你先坐着别动')
+  assert.ok(b, '「三分钟后见」应被认出')
+  assert.equal(b.minutes, 3)
+  const c = detectCommitment('晚安，明天聊')
+  assert.ok(c, '「明天聊」应被认出')
+  // 「看得见」这类感知不是承诺
+  assert.equal(detectCommitment('我明天看得见就行'), undefined)
+  // 主语是别人时不是她的承诺（动词命中也不行）
+  assert.equal(detectCommitment('他三分钟后要打电话'), undefined)
+  assert.equal(detectCommitment('我先睡了；他三分钟后要打电话'), undefined, '跨分号也该拒')
+})
+
+/* -------------------------------------------- 三、线上那句原话必须被认出 */
+
 console.log('\n线上原话（session-xxx）')
  await check('「三分钟后喊你」被判为需要补记的承诺', () => {
   const text = '行\n\n三分钟后喊你\n\n你先回我，是不是又没喝水'
