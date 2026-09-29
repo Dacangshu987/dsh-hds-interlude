@@ -508,5 +508,61 @@ await check('压缩版（compact，聊天 Tab 用）只渲染连接状态，不�
   assert.doesNotMatch(text, /即将到点/, '压缩版不该渲染待办列表')
 })
 
+/* ── 健康指标（移植 rc1 的 health，面板卡片上要看得见）────────────────── */
+
+await check('压缩版带健康指标：成功率/缺失率/缓存/中位耗时/轮次/主动开口都显示', async () => {
+  const h = await mount({
+    ...SAMPLE,
+    channel: { enabled: true, connected: true, appId: '1905583221', sayFallback: 'strict', bindings: 2, bots: [] },
+    health: {
+      sessions: 1, narrativeTotal: 1, narrativeFailed: 1, structureMissing: 0,
+      sideTaskTotal: 0, sideTaskFailed: 0, proactiveTotal: 2, proactiveSent: 1,
+      inputTokens: 1000, cachedTokens: 250,
+      successRate: 0.5, structureMissingRate: 0.2, cacheHitRate: 0.25, proactiveRate: 0.5,
+      medianLatencyMs: 4000, sinceAt: '2026-09-28T20:00:00.000Z',
+    },
+  })
+  h.render(h.View, { compact: true })
+  for (let i = 0; i < 4; i += 1) await new Promise((r) => h.realSet(r, 0))
+  const text = textOf(h.render(h.View, { compact: true }))
+  await new Promise((r) => h.realSet(r, 0))
+
+  assert.match(text, /运行健康/, '应有「运行健康」分区')
+  assert.match(text, /叙事成功率/, '缺少成功率标签')
+  assert.match(text, /50%/, '成功率应为 50%')
+  assert.match(text, /结构化缺失率/, '缺少缺失率标签')
+  assert.match(text, /20%/, '缺失率应为 20%')
+  assert.match(text, /缓存命中率/, '缺少缓存命中标签')
+  assert.match(text, /25%/, '缓存命中率应为 25%')
+  assert.match(text, /中位叙事耗时/, '缺少中位耗时标签')
+  assert.match(text, /4s/, '中位耗时应按秒显示（4000ms → 4s）')
+  assert.match(text, /叙事轮次/, '缺少轮次')
+  assert.match(text, /主动开口成功/, '缺少主动开口成功')
+  assert.match(text, /起于 20:00:00/, '应显示统计起点')
+})
+
+await check('压缩版无样本时如实标注，不假装 100% 健康', async () => {
+  const h = await mount({
+    ...SAMPLE,
+    channel: { enabled: true, connected: true, appId: '1905583221', sayFallback: 'strict', bindings: 0, bots: [] },
+    health: {
+      sessions: 0, narrativeTotal: 0, narrativeFailed: 0, structureMissing: 0,
+      sideTaskTotal: 0, sideTaskFailed: 0, proactiveTotal: 0, proactiveSent: 0,
+      inputTokens: 0, cachedTokens: 0,
+      // 宿主口径：分母为 0 时 successRate = 1（没有样本 ≠ 失败）
+      successRate: 1, structureMissingRate: 0, cacheHitRate: 0, proactiveRate: 0,
+      medianLatencyMs: 0, sinceAt: null,
+    },
+  })
+  h.render(h.View, { compact: true })
+  for (let i = 0; i < 4; i += 1) await new Promise((r) => h.realSet(r, 0))
+  const text = textOf(h.render(h.View, { compact: true }))
+  await new Promise((r) => h.realSet(r, 0))
+
+  assert.match(text, /运行健康/)
+  assert.match(text, /尚无样本/, '必须明确标注尚无样本')
+  assert.match(text, /100%/, '上游口径：无样本时成功率取 1，照实显示')
+})
+
 console.log(`\n只读运行状态视图：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)
