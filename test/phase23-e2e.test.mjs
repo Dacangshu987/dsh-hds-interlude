@@ -46,6 +46,8 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
   if (!keepState) fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
   const registered = new Map()
   const registeredCommands = new Map()
+  // followup：记录被唤起的提示词（QQ 入站唤醒走的是 agent.followup）。
+  const followups = []
   const agent = {
     id: SESSION,
     session: {
@@ -54,6 +56,7 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
       seq: events.length,
       eventAt: index => events[index],
     },
+    followup: (message) => { followups.push(message) },
   }
   const ctx = new Context()
   ctx.provide('agents', { get: () => agent, currentInitiator: () => undefined })
@@ -120,7 +123,7 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
       async () => ({ kind: 'enter', messages: [] }))
     return decision ? decision.messages.map(m => m.content.map(b => b.text).join('')).join('\n') : ''
   }
-  return { ctx, registered, exec, state, runPreStep, runCommand, routes }
+  return { ctx, registered, exec, state, runPreStep, runCommand, routes, followups }
 }
 
 const USER_EVENT = text => ({ type: 'user/message', time: 1_700_000_000_000, data: { content: [{ type: 'text', text }] } })
@@ -544,6 +547,27 @@ await check('assistant/message 的 usage 接进健康指标（缓存命中率不
   assert.equal(h.inputTokens, 1000, `输入 token 应被记录，实际 ${h.inputTokens}`)
   assert.equal(h.cachedTokens, 400, `缓存读 token 应被记录，实际 ${h.cachedTokens}`)
   assert.ok(Math.abs(h.cacheHitRate - 0.4) < 1e-9, `缓存命中率应为 0.4，实际 ${h.cacheHitRate}`)
+  await ctx.stop?.()
+})
+
+await check('QQ 入站唤醒把 advanceMode 拨成 speak（收到消息必须可能回复）', async () => {
+  const { ctx, followups } = await boot({ events: [], bindIm: true })
+  // 模拟上一轮自动推进留下的 story-only 模式（线上实锤场景：12:02 发过消息，
+  // 12:09 用户来消息，模式行仍写「只写故事」→ 模型不调用 interlude_say → 不回复）。
+  const st = loadState(SESSION)
+  st.advanceMode = 'story-only'
+  saveState(SESSION, st)
+  // 喂一条 QQ 入站消息走完整链路（dedupe → 路由 → 注入 → followup）。
+  await ctx.__qqIngest({
+    messageId: `msg-inbound-${Date.now()}`,
+    kind: 'c2c',
+    senderId: 'USER1',
+    content: '在吗',
+  }, 'qq_test')
+  await new Promise((r) => setTimeout(r, 60))
+  const after = loadState(SESSION)
+  assert.equal(after.advanceMode, 'speak', `入站唤醒后应为 speak，实际 ${after.advanceMode}`)
+  assert.ok(followups.length >= 1, '应发起 followup 回合（否则模型不会跑）')
   await ctx.stop?.()
 })
 
