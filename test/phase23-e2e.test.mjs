@@ -40,7 +40,7 @@ const check = async (label, fn) => {
 console.log('Phase 2/3 端到端')
 
 /** 起一个真插件实例。events 会作为会话日志（供记账）。 */
-async function boot({ events = [], statePatch = {}, keepState = false, bindIm = false } = {}) {
+async function boot({ events = [], statePatch = {}, keepState = false, bindIm = false, extraSessions = [] } = {}) {
   // keepState：保留上一次写下的状态文件，用于「盘上的事实能否被读回来」这类用例。
   // 默认清盘——多数用例需要一个干净的起点，残留会串台。
   if (!keepState) fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
@@ -59,7 +59,8 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
     followup: (message) => { followups.push(message) },
   }
   const ctx = new Context()
-  ctx.provide('agents', { get: () => agent, currentInitiator: () => undefined })
+  // 只对主会话返回 agent：真实宿主对没打开的会话返回空，冷/热两条路径必须分别走到。
+  ctx.provide('agents', { get: (id) => (id === SESSION ? agent : undefined), currentInitiator: () => undefined })
   ctx.provide('systemPrompt', { section: () => () => {} })
   ctx.provide('tools', { register: t => { registered.set(t.name, t); return () => {} } })
   ctx.provide('commands', { register: c => { registeredCommands.set(c.name, c); return () => {} } })
@@ -86,6 +87,13 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
   state.roleplay = true
   Object.assign(state, statePatch)
   saveState(SESSION, state)
+  // 额外的会话状态文件：用于「被跳过的会话要留下可诊断日志」这类用例
+  // （sweep 遍历 listStoredStates()，所以写盘就等于被纳入扫描）。
+  for (const extra of extraSessions) {
+    const st = emptyState()
+    Object.assign(st, extra.state ?? {})
+    saveState(extra.id, st)
+  }
 
   // bindIm：把该会话绑到一个 QQ 机器人上。
   // 「写了正文却没调 interlude_say」这条诊断**只在真有投递目标时**才成立
@@ -550,6 +558,25 @@ await check('assistant/message 的 usage 接进健康指标（缓存命中率不
   await ctx.stop?.()
 })
 
+await check('被跳过的会话会留下可诊断日志（不再静默 return）', async () => {
+  const logs = []
+  const orig = console.log
+  console.log = (...args) => { logs.push(args.map(String).join(' ')) }
+  try {
+    // 一个「有互动痕迹、但没有绑定」的冷会话：会走到推进预判并被 no-binding 挡住。
+    await boot({
+      events: [],
+      extraSessions: [{ id: 'session-skip-probe', state: { lastUserAt: Date.now() } }],
+    })
+    await new Promise((r) => setTimeout(r, 250))
+  } finally {
+    console.log = orig
+  }
+  const text = logs.join('\n')
+  assert.match(text, /会话跳过（advance-no-binding）/, `应留下跳过原因：\n${text.slice(-400)}`)
+  assert.match(text, /session-skip-probe/, '日志里应带会话 id')
+})
+
 await check('QQ 入站唤醒把 advanceMode 拨成 speak（收到消息必须可能回复）', async () => {
   const { ctx, followups } = await boot({ events: [], bindIm: true })
   // 模拟上一轮自动推进留下的 story-only 模式（线上实锤场景：12:02 发过消息，
@@ -603,4 +630,6 @@ await check('纯沉默（什么都没写）→ 没有诊断（beta10 授予的�
 console.log(ok ? '\n✅ Phase 2/3 端到端通过' : '\n❌ 有问题')
 fs.rmSync(TEST_HOME, { recursive: true, force: true })
 process.exit(ok ? 0 : 1)
+
+
 
