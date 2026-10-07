@@ -320,8 +320,8 @@ check('扩展页有模型特化（rc14）：档位与模型名读回', () => {
 })
 
 check('扩展页有维护段（记忆窗口 / 休息时段 / 日志）并读回配置值', () => {
-  eq(controlNearLabel(advanced, '近期记录保留条目数').props.value, 35, '条目下限')
-  eq(controlNearLabel(advanced, '额外保留时间窗').props.value, 45, '时间窗')
+  eq(controlNearLabel(advanced, '历史上下文条数闸').props.value, 35, '条数闸')
+  eq(controlNearLabel(advanced, '历史上下文时间窗').props.value, 45, '时间窗')
   eq(controlNearLabel(advanced, '长期事实读取上限').props.value, 12, '事实上限')
   eq(controlNearLabel(advanced, '休息时段').props.value, '22:30-06:30', '休息时段文本')
   const intervalInputs = controlsNearLabel(advanced, '窗口内推进间隔')

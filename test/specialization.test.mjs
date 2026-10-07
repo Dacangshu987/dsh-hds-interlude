@@ -95,14 +95,24 @@ check('familyOverrides：最小偏移（打字块替换 + 至多一条新增行�
   const kimi = familyOverrides('kimi')
   assert.equal(kimi.typed, undefined, 'kimi 不替换整块，只在完整块后补一段')
   assert.equal(kimi.typedExtra, TYPED_KIMI_EXTRA)
-  for (const family of ['claude', 'glm']) {
+  for (const family of ['claude', 'glm', 'deepseek']) {
     const o = familyOverrides(family)
     assert.ok(o.extraAfterPhase, `${family} 应有一条家族行`)
     assert.equal(o.typed, undefined, `${family} 不该整块替换`)
   }
-  for (const family of ['gemini', 'gpt', 'grok', 'deepseek', 'generic', 'nope']) {
+  for (const family of ['gemini', 'gpt', 'grok', 'generic', 'nope']) {
     assert.deepEqual(familyOverrides(family), {}, `${family} 应无偏移`)
   }
+})
+
+check('familyOverrides：deepseek 家族行覆盖 rc28 修复的三个语义点', () => {
+  // 上游 rc28 修复点：① 发送通道每回合必需 ② 历史不是模板 ③ 不给「省略」留口。
+  const deepseek = familyOverrides('deepseek')
+  assert.ok(deepseek.extraAfterPhase.includes('每回合独立'), '① 通道每回合必需')
+  assert.ok(deepseek.extraAfterPhase.includes('不是模板'), '② 历史不是模板')
+  assert.ok(deepseek.extraAfterPhase.includes('interlude_say'), '落在本仓的发送工具上')
+  assert.ok(deepseek.extraAfterPhase.includes('不要因为最近几轮没调用就认为这轮可以省略'), '③ 堵住惯性省略')
+  assert.ok(deepseek.extraAfterPhase.includes('不说时安静结束即可'), '保留合法不回的出口（不矫枉成强制秒回）')
 })
 
 check('resolveSpecialtyBlocks：打字块选择与家族行至多一条', () => {

@@ -193,5 +193,104 @@ check('注入条目正文带 [世界事件] 前缀（上游注入形态）', () 
   assert.equal(WORLD_EVENT_PREFIX, '[世界事件] ')
 })
 
+/* ─────────────────────── F. rc28 复读架构修复 ─────────────────────── */
+
+import {
+  WORLD_SEED_DOMAINS,
+  seedDomainForRun,
+  buildWorldSeederPayload,
+  planWorldSeederSweep,
+} from '../lib/world-seeder.js'
+
+console.log('世界事件播种器（rc28 复读架构修复）')
+
+check('切面表：六个通用切面，每个都有 key/label/brief', () => {
+  assert.equal(WORLD_SEED_DOMAINS.length, 6)
+  for (const d of WORLD_SEED_DOMAINS) {
+    assert.ok(d.key && d.label && d.brief, `切面 ${d.key} 字段齐全`)
+  }
+  // 上游原表的 key 顺序（nature/dwelling/livelihood/close-people/paths/chance）
+  assert.deepEqual(WORLD_SEED_DOMAINS.map((d) => d.key),
+    ['nature', 'dwelling', 'livelihood', 'close-people', 'paths', 'chance'])
+})
+
+check('seedDomainForRun：确定性轮换——同槽稳定、跨槽前进、周期覆盖、跨会话相位错开', () => {
+  const cadence = 45
+  const t0 = Date.parse('2026-10-04T12:00:00+08:00')
+  const slotOf = (t) => Math.floor(t / (cadence * 60_000))
+  // 同一时间槽内稳定
+  const d1 = seedDomainForRun('sess-a', new Date(t0), cadence)
+  const d2 = seedDomainForRun('sess-a', new Date(t0 + 10 * 60_000), cadence)
+  assert.equal(d1.key, d2.key, '同一时间槽内切面稳定')
+  // 相邻槽必不同（6 切面下前进一格）
+  const d3 = seedDomainForRun('sess-a', new Date(slotOf(t0) * cadence * 60_000 + cadence * 60_000), cadence)
+  assert.notEqual(d3.key, d1.key, '相邻时间槽切面必不同')
+  // 周期覆盖：连续 6 槽恰好覆盖全部切面各一次
+  const seen = new Set()
+  for (let i = 0; i < 6; i += 1) {
+    seen.add(seedDomainForRun('sess-a', new Date((slotOf(t0) + i) * cadence * 60_000), cadence).key)
+  }
+  assert.equal(seen.size, 6, '一周期内六切面全覆盖')
+  // 跨会话相位错开（不要求必不同，但两个已知会话至少暴露出这种可能）
+  const da = seedDomainForRun('sess-a', new Date(t0), cadence)
+  const db = seedDomainForRun('sess-b', new Date(t0), cadence)
+  assert.ok(da && db, '跨会话各自有确定切面')
+  // 确定性：同一输入两次调用结果一致
+  assert.equal(seedDomainForRun('sess-a', new Date(t0), cadence).key, da.key)
+})
+
+check('系统提示词：带切面时追加 THIS RUN\'S SLICE 行；不带时与旧版逐字一致', () => {
+  const withDomain = worldSeederSystemPrompt(WORLD_SEED_DOMAINS[0])
+  assert.ok(withDomain.includes("THIS RUN'S SLICE OF THE WORLD: 天象与环境"), '应含切面行')
+  assert.ok(withDomain.includes('never import real-world institutions'), '应禁止移植现实建制')
+  assert.ok(withDomain.includes('return an empty array'), '空着比硬凑强')
+  // 切面行只在当轮局部取材
+  assert.ok(withDomain.includes("Originate this run's event from this slice only"))
+  // 不带切面 → 与旧版（无切面行）完全一致
+  const base = worldSeederSystemPrompt()
+  assert.ok(!base.includes("THIS RUN'S SLICE"), '不带切面时不应出现切面行')
+  assert.ok(base.includes('MOST RUNS MUST RETURN an empty events array'))
+})
+
+check('载荷：domain → thisRunSlice 字段；world-event 条目不进近期生活摘录（反馈环切断）', () => {
+  const payload = JSON.parse(buildWorldSeederPayload({
+    now: NOW,
+    timezone: TZ,
+    story: { character: { name: '她' }, world: { setting: '现代小城' } },
+    recentEntries: [
+      { kind: 'script', at: new Date(NOW.getTime() - 3600_000).toISOString(), text: '她下午去了趟超市。' },
+      { kind: 'world-event', at: new Date(NOW.getTime() - 1800_000).toISOString(), text: '[世界事件] 楼下五金店开始装修。' },
+      { kind: 'script', at: new Date(NOW.getTime() - 900_000).toISOString(), text: '她回家做了饭。' },
+    ],
+    domain: WORLD_SEED_DOMAINS[1],
+    runtime: { maxHorizonHours: 72, dailyCap: 4 },
+  }))
+  assert.deepEqual(payload.thisRunSlice, { key: 'dwelling', label: '居所与近邻', brief: WORLD_SEED_DOMAINS[1].brief }, 'thisRunSlice 应随 domain 出现')
+  const lifeTexts = payload.recentEstablishedLife.map((e) => e.text).join('\n')
+  assert.ok(lifeTexts.includes('她下午去了趟超市'), '普通剧本条目应保留')
+  assert.ok(!lifeTexts.includes('[世界事件]'), 'world-event 条目必须被排除（反馈环切断）')
+  // 不带 domain → thisRunSlice 字段不出现（JSON.stringify 丢 undefined）
+  const noDomain = JSON.parse(buildWorldSeederPayload({
+    now: NOW, timezone: TZ, story: {}, runtime: { maxHorizonHours: 72, dailyCap: 4 },
+  }))
+  assert.equal(noDomain.thisRunSlice, undefined, '无 domain 时不应有 thisRunSlice')
+})
+
+check('去重视野：planWorldSeederSweep 输出 scheduledSummaries，且与注入摘要互相独立', () => {
+  const now = NOW.getTime()
+  const plan = planWorldSeederSweep({
+    events: [
+      { id: 1, summary: '已注入的事件', importance: 'low', status: 'injected', injectedAt: new Date(now - 2 * 3600_000).toISOString(), occursAt: new Date(now - 3 * 3600_000).toISOString() },
+      { id: 2, summary: '还在排期的事件', importance: 'low', status: 'scheduled', occursAt: new Date(now + 30 * 60_000).toISOString() },
+    ],
+    runtime: { enabled: true, maxPending: 4, dailyCap: 4 },
+    now,
+    random: () => 1,
+  })
+  assert.equal(plan.proceed, true)
+  assert.deepEqual(plan.recentSummaries, ['已注入的事件'], '近 14 天已注入')
+  assert.deepEqual(plan.scheduledSummaries, ['还在排期的事件'], '排期中必须单独列出')
+})
+
 console.log(`\n世界事件播种器：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)

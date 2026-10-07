@@ -15,9 +15,10 @@
 | `0.1.4` → `1.0.1-beta6-rebuild` | 2026-09-01 → 09-10 | ✅ 已对齐（见 `上游更新方案-落实进度.md`） |
 | `1.0.1-rc1` ~ `rc13` | 09-12 → 09-21 | ◐ 部分（见下表） |
 | `1.0.1-rc14` ~ `rc19` | 09-23 | ◐ 部分（rc18 已移植，其余多为提示词/协议） |
-| `1.0.1-rc20` ~ `rc22` | 09-24 | ❌ 未移植 |
-| `1.0.1-rc23` | 09-26 | ◐ **档位化已移植**；播种器未移植 |
+| `1.0.1-rc20` ~ `rc22` | 09-24 | ◐ 部分（rc21/rc23 审计项已补，见第 2026-10 批次） |
+| `1.0.1-rc23` | 09-26 | ✅ **档位化 + 播种器 M1/M2 + 审计退避已移植** |
 | `1.0.1-rc24` | 09-27 | ❌ 未移植（配置形态，多为 N/A） |
+| `1.0.1-rc25` ~ `rc36` | 10-02 → 10-04 | ◐ **五项高优先级已移植**（rc28 DeepSeek 家族行、rc28 播种器复读架构、rc25 联系温度、rc33 投递幂等、rc35 历史预算旋钮），见第十四章；其余多为 N/A 或后续评估 |
 
 ---
 
@@ -530,11 +531,22 @@ participantId 与群名、带「承诺 ≠ 已发」「不要想象观众反应�
 | rc22 群聊 interaction 形态容错 | N/A（提升逻辑） / ✅（重放去重） | `hoistParticipantlessInteraction` 是 JSON interaction 专属 → N/A；群消息重放去重本仓 `DedupeWindow` 已等价 |
 | rc23 意愿档位 + 世界播种器 M1/M2 + 审计退避 | ✅ 已移植 | 见第三/四/七节 |
 | rc24 播种器配置并入用途勾选 | N/A | 上游是「模型中心连接行勾选」的配置形态；DSH 无该 UI，本仓用 `worldSeeder.enabled` + 可注入执行器 |
+| rc25 主动联系温度三模式 + proactiveDailyCap | ✅ **已移植** | 见第十四章（一） |
+| rc26 / rc27 单剧本多通道 M0/M1 | N/A（后续评估） | 上游「一剧本多端点」是 SQLite 端点注册表 + 路由层；本仓一 bot 一私聊/群绑定，若需要多通道再评估 |
+| rc28 DeepSeek V4.1 回复模式修复 + 播种器复读架构修复 | ✅ **已移植** | 见第十四章（二）（三） |
+| rc29 ~ rc32 长线叙事催化器 / 群聊图片回流 / 计权契约 | ❌ 暂缓 | 全新子系统（Narrative Attractor）与视觉输入依赖侧端模型通道与多模态通路，本仓执行器注入点尚未接入宿主；后续按需评估 |
+| rc33 投递幂等与桥接 ambiguous 语义 | ✅ **已移植**（幂等键部分） | 见第十四章（四）；桥接/worker 是桌面版专属 → N/A |
+| rc34 权限拒绝可诊断 | N/A | `canManageSession` / `managerAccounts` / `interlude.doctor` 是 Koishi Console 权限体系；本仓命令无管理员白名单层 |
+| rc35 剧本历史条目旋钮修复（硬地板移除） | ✅ **已移植**（且修复了更彻底的死键问题） | 见第十四章（五） |
+| rc36 小模型换行分句开关 + 上下文三件套 | ◐ 部分 | `contextEntryLimit`/`contextTimeWindowMinutes` 已接回（见第十四章（五））；`convertNewlineToSeparator` N/A（本仓分条语义是「一行一条」，无需换行→分隔符转换） |
 
 **结论**：上游清单里**可移植的能力全部已移植并有测试**；其余项要么是
 **架构差异型 N/A**（宿主管 provider/传输、无 JSON interaction 合约、无 SQLite/构建链），
 要么是**已等价的既有实现**（repetition guard / DedupeWindow / 消息感知 / purge）。
 没有「未分类」或「知道该做但没做」的遗留项。
+
+> 2026-10 批次补充：rc25–rc36 已按上表分类完毕，五项高优先级能力移植完成
+> （详见第十四章），无新增「未分类」项。
 
 ---
 
@@ -542,3 +554,133 @@ participantId 与群名、带「承诺 ≠ 已发」「不要想象观众反应�
 
 每一项移植都必须：新增对应测试 → 跑全量 `npm test`（含承重验证 `test:loadbearing`）
 → 同步 `.publish-snapshot`（脱敏 + 保持 `test:live` 差异）→ 推送 GitHub。
+
+---
+
+## 十四、2026-10 批次：rc25–rc36 五项高优先级移植
+
+> 参照物：上游 Gitee 仓库的两个 collapsed 提交（rc28 @ `cc3452d`、rc36 @ `46190cb`，
+> 本地临时 tag `_tmp_upstream_rc24` / `_tmp_upstream_rc36`）。rc25–rc35 逐版语义
+> 从 rc36 的 `docs/CHANGELOG.md` 与 `src/` 逐段核对。
+
+### （一）rc25：主动联系温度三模式 + proactiveDailyCap
+
+上游把 `allowProactiveMessages` 拆成 `contactMode: strict|natural|balanced` 三档：
+strict 只认硬事实动机；natural 承认「想念/好奇近况/想分享此刻」也是合法动机
+（但必须体现在剧本里，安静仍然合法）；balanced 在 natural 之上加「情感动机须节制」。
+配套 `naturalMinimumIntervalMinutes`（默认 30）——natural/balanced 下把主动联系
+安全间隔从普通 `minimumProactiveIntervalMinutes`（60）缩短到该值（仅当更小时生效，
+取 min 语义）。`proactiveDailyCap` 支持 0=不限。
+
+| 上游 | 本仓落点 |
+|---|---|
+| `Agency.contactMode` 三值 + 默认 strict | `lib/schema.js` + `lib/agency.js`（`DEFAULT_AGENCY_CONFIG` 对齐） |
+| `naturalMinimumIntervalMinutes`（0–10080，默认 30） | 同上；`evaluateAgencyCapacity` 的间隔逻辑按档位切换（`min(普通, natural)`，仅 natural/balanced 生效；strict 字节不变） |
+| 情感动机教义（strict 无 / natural 两行 / balanced 三行） | `lib/render.js` `renderRules` 联系基线块 + `renderStatus` 联系温度显示行 |
+| `proactiveDailyCap` 0=不限 | `lib/index.js` `proactiveMaxPerDay(cfg)`（floor，接受 0）+ `quotaUnlimited(cfg)`；`handleProactive` / `storyMessageGate` / `decideAdvanceDelivery`（0 → `Infinity`）三处配额闸统一；面板输入 `min: 0` + 状态卡「2 / 不限」显示 |
+
+**测试**：`test/contact-mode.test.mjs`（10 项）：schema 三值与默认、间隔档位切换
+（含 min 语义不放大）、承诺型照旧绕过、容量硬门不受温度影响、三档教义渲染差异、
+状态卡温度行与「不限」显示。
+
+### （二）rc28：DeepSeek V4.1 回复模式修复（EXTRA_DEEPSEEK / TRANSPORT IS PER-TURN）
+
+上游为 deepseek 家族追加家族块：V4.1 会把「上轮没调发言工具」误学成惯例
+（历史消息是当年发出的，不带本轮的传输形态），导致连续漏发。核心三句：
+**发送通道每回合独立；历史不带工具调用形态，是历史不是模板；决定不说是选择不是惯性。**
+
+本仓等价失败模式是「写了正文但没调 `interlude_say`」（修过两次：cbc642c
+advanceMode→speak、salvageBodySpeech 兜底），所以家族行按本仓口径重写，
+钉住同一组语义点。`lib/specialization.js` 的 `familyOverrides()` 新增
+`case 'deepseek'`（`extraAfterPhase`）。
+
+**测试**：`test/specialization.test.mjs` 扩展（10 项）：deepseek 行覆盖三个语义点
+（「每回合独立」「不是模板」「interlude_say」「不要因为最近几轮没调用…」「安静结束」）。
+上游 `normalizeInteraction` 宽容化半边 N/A（无 JSON interaction 结构）。
+
+### （三）rc28：世界事件复读架构修复（反馈环切断 + 切面轮换 + 去重视野）
+
+上游根治「播种器复读」（用户实测同一通知 4 连换皮）：① **反馈环切断**——
+载荷的紧凑摘录不再包含 world-event 条目（自己播种的事件不该成为自己的灵感）；
+② **切面轮换**——`WORLD_SEED_DOMAINS` 六个世界切面（nature/dwelling/livelihood/
+close-people/paths/chance），按 `(storyId, 时间槽)` 确定性轮换，相邻两轮必不同，
+提示词追加 `THIS RUN'S SLICE OF THE WORLD`（切面是世界的一面不是题材，禁止
+搬入现实机构）；③ **去重视野**——去重窗口纳入**排期中**（scheduled）事件的摘要。
+
+| 上游 | 本仓落点 |
+|---|---|
+| `WORLD_SEED_DOMAINS`（6 切面，逐字） | `lib/world-seeder.js` 导出 |
+| `seedDomainForRun(storyId, slotStart, cadence)`（hash×31+crc 种子 7，`Math.imul` 溢出安全） | 同上（逐字对齐） |
+| 切面提示词行（label/brief + 反类型化约束 + 空数组出口） | `worldSeederSystemPrompt(domain)` |
+| 载荷排除 world-event + `thisRunSlice` | `buildWorldSeederPayload(domain)` |
+| 去重窗口 = scheduled + injected | `planWorldSeederSweep().scheduledSummaries` → `lib/index.js` `dedupeWindow`；已采纳草稿的摘要**可变地**并入后续采纳判定（`recentSummaries` 数组复写） |
+
+**测试**：`test/world-seeder.test.mjs` 第 F 节（5 项）+ 既有 M1/M2/E2E 全绿（16/16）。
+
+### （四）rc33：投递幂等（业务幂等键跨投递尝试去重）
+
+上游 P1-1：桌面 worker 30s 超时后用**新 deliveryId** 重发，而「上游已收、回执迟到」
+时用户收到重复消息。修复：每条出站消息带**重试间稳定**的业务幂等键
+（`scriptEvent.eventId:bubbleIndex`），宿主 outbox 据此跨 deliveryId 去重。
+口径：**宁可少发一条，不给用户重复消息**（歧义即视为已送达）。
+
+本仓等价场景：主动投递部分成功后 `pendingText/pendingRemaining` 续发同一段内容——
+若失败原因是**歧义**（超时/未确认，消息可能已到 QQ），已确认送达的气泡会被重发。
+
+| 上游 | 本仓落点 |
+|---|---|
+| 业务幂等键（重试间稳定） | `lib/qq-im/outbound.js` `deriveItemKeys`：`intentPrefix:序号` 锚定**整批**（`baseIndex`），续发用上一轮保存的原键（`remainingKeys` 优先，键不足一律空串——**绝不猜键**，猜键会与首轮碰撞误拦） |
+| 宿主 outbox 跨 deliveryId 去重 | `DeliveredIntentWindow`（TTL 6h、容量 500，与入站 `DedupeWindow` 同形态、方向相反）；`channel.js` `sendToTarget` 挂窗口，`intentPrefix` 存在才启用（其他调用方零改动） |
+| 确认送达 / 歧义失败 | `deliverMessages`：确认 → `mark` 入窗；歧义失败（`isAmbiguousDeliveryError`：未确认/超时/无错误码）→ 在发条目**保守标疑似已送达**；确定失败（结构化错误码/no-target/cancelled）不标，重发安全 |
+| 键透传 | `lib/index.js` `deliverToIm({intentPrefix, remainingKeys})` → `sendToTarget`；主动路径以 `target.id` 为前缀；失败时保存 `pendingRemainingKeys`，续发**直传条目**（不再 join 重分条，避免键错位）；成功/放弃时清键 |
+
+**测试**：`test/delivery-idempotency.test.mjs`（9 项）：歧义判定表、键推导三优先级
+与「键不足不猜」、窗口 TTL/容量、确认入窗、窗口命中不真发但计入 sentCount、
+歧义标疑似已送达→续发被拦（rc33 要堵的重复消息）、确定失败不误拦、无键调用方
+字节不变、取消不标。既有 `test/qq-im/outbound.test.mjs`（15 项）全绿证明向后兼容。
+
+### （五）rc35：剧本历史条目旋钮修复（硬地板移除 + 死键接回）
+
+上游 rc35：`recentEntriesForPrompt` 里 `Math.max(35, …)` 硬地板（M4.1 引入）使
+`contextEntryLimit` 调到 35 以下**静默失效**，小模型无法收缩历史上下文。修复后
+预算判定抽为纯函数 `resolveScriptContextBudget`：条数下限 1、默认 35、上限 200；
+时间窗 0–1440、默认 45；条数闸与时间窗闸**取并集**（连发可超名义条数而不挤掉
+同一小时里更早的话）。
+
+**本仓的问题更彻底**：`contextEntryLimit` / `contextTimeWindowMinutes` 两个键在
+0.1.4-beta3 时曾消费（`recentEntries(storyId, config.runtime.contextEntryLimit)`），
+重写后消费点全部丢失——是**没有任何读者的死键**，调大调小都无效果。
+
+| 上游 | 本仓落点 |
+|---|---|
+| `resolveScriptContextBudget`（rc35 纯函数，无地板） | `lib/script-entry.js` 同名导出；「没传」与「显式 0」分开（0 分钟=关闭时间窗是合法值；条数 0/非法 → 回默认 35） |
+| `recentEntriesForPrompt`（count ∪ 时间窗，500 上限，id 升序） | 同上；墓碑（redacted）不进入 |
+| 消费点 | `lib/index.js` 两处接回：① `interlude_memory` 认知证据候选窗口（原 `.slice(-20)`）；② 世界播种器历史窗口（原写死 `.slice(-24)`）。上游的 agency 证据窗口（`Math.max(40, limit*2)`）对应本仓 `agency.js` `sourceEntryIds.slice(-20)`，暂保持独立口径 |
+| schema/面板 | `lib/schema.js` 默认值对齐上游（35/45）+ 描述重写（叠加语义、无地板）；`lib/client.js` 面板标签改为「历史上下文条数闸/时间窗」 |
+
+**测试**：`test/context-budget.test.mjs`（7 项）：默认与缺字段、调小到 1 真的生效
+（rc35 核心语义）、上限夹取、显式 0 关闭时间窗、条数闸/并集/升序、墓碑排除、
+防御。`test/client-panel-coverage.test.mjs` 标签同步更新。
+
+### rc25–rc36 其余项分类（N/A / 暂缓 / 部分）
+
+| 上游项 | 结论 | 理由 |
+|---|---|---|
+| rc26/rc27 单剧本多通道 M0/M1（端点注册表、按账号路由） | N/A（后续评估） | 需 SQLite 端点表 + 多通道路由层；本仓一 bot 一绑定，若需要再立项 |
+| rc28 单剧本多通道 M2/M3/M4 | 同上 | 同为多通道架构 |
+| rc29 桌面端 QQ 数字/微信/OneBot 账号 | N/A | 桌面 worker 专属 |
+| rc30 Qzone 增量提交 | N/A | 上游 Qzone 端点专属 |
+| rc31 Narrative Attractor Phase 0-3（长线叙事指导） | ❌ 暂缓 | 全新子系统，依赖侧端模型通道（`useForCompaction` 类连接勾选）与持久化状态表；本仓执行器注入点尚未接入宿主，见 §四「排水开关」同款约束 |
+| rc32 催化器阈值调整 | 同上（随 rc31） | |
+| rc33 桥接 ambiguous 语义 / worker 崩溃诊断 / 日志留存 | N/A | 桌面 worker 进程模型专属；本仓无 worker |
+| rc33 Qzone 增量一致性 / 贴纸宿主代理 / OneBot 多通道校验 | N/A | 同为桌面/多通道专属 |
+| rc34 权限拒绝可诊断（manageSessionDenialReason） | N/A | Koishi Console 管理权限体系（`canManageSession`/`managerAccounts`）；本仓命令无该白名单层 |
+| rc36 `convertNewlineToSeparator` | N/A | 上游是「模型没输出 `<sep/>` 时把换行当气泡边界」的补救；本仓分条语义本来就是「一行一条」，无需转换开关 |
+| rc36 `contextTimeWindowMinutes` | ✅ 随 rc35 一并接回 | 见（五） |
+
+### 本批次验证
+
+- 新增测试：`contact-mode`（10）/ `delivery-idempotency`（9）/ `context-budget`（7）
+  + `specialization`、`world-seeder`、`client-panel-coverage` 扩展。
+- 全量 `npm test` exit=0；`test:loadbearing` exit=0（其中 4 个 FAIL 是**刻意的反例
+  验证**——拆掉机制后用例必须变红，基线与移植后行为一致）。
