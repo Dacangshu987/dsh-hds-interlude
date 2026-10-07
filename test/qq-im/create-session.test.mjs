@@ -315,10 +315,10 @@ await check('create 带上 resolveCwd 给出的工作目录（否则会话不显
     config: { enabled: true, botId: 'qq' },
     log: () => {},
     transport: async () => ({ sent: true }),
-    resolveCwd: () => 'D:\\ds-harness-test\\111',
+    resolveCwd: () => 'D:\\work\\dsh-hds-interlude',
   })
   await channel.createSessionFor('c2c:U1', { kind: 'c2c', senderId: 'U1', content: 'x', messageId: 'm1' })
-  assert.equal(requests[0].cwd, 'D:\\ds-harness-test\\111', '应把工作目录传给 create')
+  assert.equal(requests[0].cwd, 'D:\\work\\dsh-hds-interlude', '应把工作目录传给 create')
 })
 
 await check('显式配置 im.cwd 优先于 resolveCwd', async () => {

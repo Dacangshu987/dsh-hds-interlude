@@ -332,6 +332,11 @@ function makeHost(options = {}) {
             type: 'user/message',
             data: { content: [{ type: 'text', text: '（幕间唤起）' }], source: { kind: 'plugin', plugin: 'hds-interlude', form: 'notice' } },
           })
+          if (Array.isArray(options.injectedEvents)) {
+            for (const ev of options.injectedEvents) {
+              ctx.emit('session/event', this.session, ev)
+            }
+          }
           // 真实 agent 被唤起后会写出 assistant 文本；捕获器靠这两个事件结算。
           // setTimeout 让「先挂捕获窗口、再产生事件」的顺序与生产一致。
           setTimeout(() => {
@@ -875,6 +880,47 @@ await check('插件唤起的回合里调了 interlude_say → 只投一次，不
   await host.ctx.stop?.()
 })
 
+await check('外部插件（如 time-context）在到点提醒回合注入快照 → 不清标记，不触发交互式重复投递', async () => {
+  const sessionId = 'session-cold-double-timecontext'
+  const speech = '我到老家了\n刚转的班车，我妈在路口接我，晚上炖排骨\n你忙完早点吃饭'
+  const host = await bootWithPendingIntent({
+    sessionId,
+    integration: { conversationKey: 'c2c:USER_TC_DOUBLE' },
+    hostOptions: {
+      speech,
+      injectedEvents: [
+        {
+          type: 'user/message',
+          data: {
+            content: [{ type: 'text', text: 'Time sampled while preparing turn 241, step 1: 2026-10-02T16:10:10.123Z' }],
+            source: {
+              kind: 'time-context',
+              form: 'snapshot',
+              sections: [{ text: 'Time sampled while preparing turn 241, step 1: 2026-10-02T16:10:10.123Z' }],
+            },
+          },
+        },
+      ],
+    },
+    pluginConfig: { im: { enabled: true, appId: 'test-app', interactive: { enabled: true, requireInbound: false } } },
+  })
+
+  const delivered = await waitFor(() => host.sent.length >= 3, 6000)
+  assert.ok(delivered, `三段话都该发出去，实际：${JSON.stringify(host.sent)}`)
+  await sleep(400)
+
+  const texts = host.sent.map(item => item.text)
+  assert.equal(texts.length, 3, `每条只该出现一次（不得被交互式重投），实际发出 ${texts.length} 条：${JSON.stringify(texts)}`)
+  assert.equal(new Set(texts).size, texts.length, `有重复投递：${JSON.stringify(texts)}`)
+  assert.ok(texts.includes('你忙完早点吃饭'), JSON.stringify(texts))
+
+  const afterState = loadState(sessionId)
+  const bogus = (afterState.ledger?.entries ?? []).filter(e => e.kind === 'user-message' && e.content.includes('Time sampled'))
+  assert.equal(bogus.length, 0, 'time-context 绝不能记入用户账本')
+
+  await host.ctx.stop?.()
+})
+
 console.log('\n故事续写：写故事与发消息是两个节奏')
 
 /**
@@ -897,6 +943,8 @@ async function bootLiveAutoAdvance({
   pluginConfig = {},
   binding = true,
   statePatch = {},
+  speech,
+  injectedEvents,
 }) {
   // 每个用例只留自己这一份状态；扫描遍历整个目录，残留会串台。
   resetDisk()
@@ -910,8 +958,22 @@ async function bootLiveAutoAdvance({
     followups: [],
     followup(message) {
       this.followups.push(message)
+      // 真实宿主在 followup 时把 notice 以 user/message 投进会话
+      host.ctx.emit('session/event', this.session, {
+        type: 'user/message',
+        data: { content: message.content, source: message.source },
+      })
+      if (Array.isArray(injectedEvents)) {
+        for (const ev of injectedEvents) host.ctx.emit('session/event', this.session, ev)
+      }
       // 真实 agent 被唤起后会写出 assistant 文本；捕获器靠这两个事件结算。
       setTimeout(() => {
+        if (speech) {
+          host.ctx.emit('session/event', this.session, {
+            type: 'tool/call',
+            data: { turn: 1, step: 1, callId: 'say_aa', name: 'interlude_say', arguments: JSON.stringify({ text: speech }) },
+          })
+        }
         host.ctx.emit('session/event', this.session, {
           type: 'assistant/message',
           data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: reply }] } },
@@ -966,6 +1028,54 @@ await check('续写里角色说了话（整行引语）→ 只有那句话被发
   assert.equal(after.reachedOut, 1, '投递成功应占掉一个主动联系名额')
   assert.ok(after.lastAutoMessageAt > 0, '发出去之后才推进「发消息间隔」的水位')
   assert.equal(after.lastAdvanceDelivery?.mode, 'speak')
+  await host.ctx.stop?.()
+})
+
+await check('自动推进续写中遭遇 time-context 快照 + 调了 interlude_say → 只投一次，不发两遍（线上真实事故回归）', async () => {
+  const sessionId = 'session-live-aa-timecontext-nodouble'
+  const speech = '我到老家了\n刚转的班车，我妈在路口接我，晚上炖排骨\n你忙完早点吃饭'
+  const host = await bootLiveAutoAdvance({
+    sessionId,
+    speech,
+    reply: '（车窗外的麦田一闪而过，大巴颠簸着进站。）',
+    injectedEvents: [
+      {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: 'Time sampled while preparing turn 241, step 1: 2026-10-02T16:10:10.123Z' }],
+          source: {
+            kind: 'time-context',
+            form: 'snapshot',
+            sections: [{ text: 'Time sampled while preparing turn 241, step 1: 2026-10-02T16:10:10.123Z' }],
+          },
+        },
+      },
+    ],
+    pluginConfig: {
+      im: {
+        enabled: true,
+        appId: 'test-app',
+        messageIntervalMinutes: 0,
+        interactive: { enabled: true, requireInbound: false },
+      },
+    },
+  })
+
+  const delivered = await waitFor(() => host.sent.length >= 3, 6000)
+  assert.ok(delivered, `三段话都该发出去，实际：${JSON.stringify(host.sent)}`)
+  await sleep(400)
+
+  const texts = host.sent.map(item => item.text)
+  assert.equal(texts.length, 3, `每条只该出现一次（绝对不能发两遍），实际发出 ${texts.length} 条：${JSON.stringify(texts)}`)
+  assert.equal(new Set(texts).size, texts.length, `有重复投递：${JSON.stringify(texts)}`)
+  assert.ok(texts.includes('你忙完早点吃饭'), JSON.stringify(texts))
+
+  const after = loadState(sessionId)
+  assert.equal(after.lastImDelivery?.ok, true)
+  assert.equal(after.lastImDelivery?.reason, '故事续写中的发言')
+  const bogus = (after.ledger?.entries ?? []).filter(e => e.kind === 'user-message' && e.content.includes('Time sampled'))
+  assert.equal(bogus.length, 0, 'time-context 绝不能记入用户账本')
+
   await host.ctx.stop?.()
 })
 

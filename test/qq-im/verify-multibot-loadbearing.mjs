@@ -8,6 +8,7 @@
  * 的替身**跑同样的用例（应当变红）。两边都符合预期，才证明 A-1 是承重的。
  */
 import assert from 'node:assert/strict'
+import { caseDir } from '../helpers/tmp.mjs'
 import path from 'node:path'
 
 import { BindingStore } from '../../lib/qq-im/binding.js'
@@ -20,7 +21,7 @@ function report(label, ok, detail) {
 }
 
 function tempHome(tag) {
-  return path.join('D:/ds-harness-test/111/.tmp-qqim-multibot-lb', `${tag}-${Date.now()}`)
+  return caseDir('multibot-lb')
 }
 
 console.log('A-1 承重：两个 Bot 绑同一 openid 必须各自独立')

@@ -19,6 +19,7 @@ import {
   appendEntry, entryById, entriesAfter, recentEntries, validEntryIds,
   verifyQuote, groundedIds, pruneLedger, isDeliveredKind,
   recordEvent, recordFromLog, draftFromEvent, textOfContent,
+  isInjectedSource, isOwnInjectedSource,
 } from '../lib/script-entry.js'
 
 let passed = 0
@@ -252,10 +253,54 @@ ok('draftFromEvent：用户消息→user-message，角色正文→script', () =>
   assert.equal(draftFromEvent(evAssistant('（她放下手机。）'), {}).kind, 'script')
 })
 
-ok('draftFromEvent：插件自己的注入**不**记成用户说话', () => {
+ok('draftFromEvent：插件自己的注入与 time-context **不**记成用户说话', () => {
   // 记进去会让「用户说过」变成假的——那是系统提示，不是谁说的话。
   const injected = { type: 'user/message', data: { content: [{ type: 'text', text: '（幕间唤起）' }], source: { kind: 'plugin', plugin: 'hds-interlude' } } }
   assert.equal(draftFromEvent(injected, {}), undefined)
+
+  const timeContext = {
+    type: 'user/message',
+    data: {
+      content: [{ type: 'text', text: 'Time sampled while preparing turn 241, step 1: 2026-10-02T16:10:10+08:00\nBrowser time zone...\nElapsed since...' }],
+      source: { kind: 'time-context', form: 'snapshot' },
+    },
+  }
+  assert.equal(draftFromEvent(timeContext, {}), undefined)
+
+  // 但 QQ 真实入站消息必须被记成用户说话
+  const qqInbound = {
+    type: 'user/message',
+    data: {
+      content: [{ type: 'text', text: '晚上吃什么' }],
+      source: { kind: 'hds-interlude', plugin: 'hds-interlude', form: 'notice', summary: 'QQ 私聊消息' },
+    },
+  }
+  const qqDraft = draftFromEvent(qqInbound, {})
+  assert.equal(qqDraft?.kind, 'user-message')
+  assert.equal(qqDraft?.content, '晚上吃什么')
+})
+
+ok('normalizeEntry：过滤包含 Time sampled 的残渣条目', () => {
+  const bad = { id: 1, kind: 'user-message', content: 'Time sampled while preparing turn 1...' }
+  assert.equal(normalizeEntry(bad), undefined)
+  const good = { id: 2, kind: 'user-message', content: '今天天气不错' }
+  assert.equal(normalizeEntry(good)?.content, '今天天气不错')
+})
+
+ok('isInjectedSource：精确区分系统/插件注入与真人说话', () => {
+  // 真人说话
+  assert.equal(isInjectedSource({ kind: 'user' }), false)
+  assert.equal(isInjectedSource(undefined), false)
+  assert.equal(isInjectedSource({ kind: 'hds-interlude', summary: 'QQ 私聊消息' }), false)
+  assert.equal(isInjectedSource({ kind: 'hds-interlude', summary: 'QQ 群聊消息' }), false)
+
+  // 系统/插件注入
+  assert.equal(isInjectedSource({ kind: 'time-context', form: 'snapshot' }), true)
+  assert.equal(isInjectedSource({ kind: 'model-selection', form: 'notice' }), true)
+  assert.equal(isInjectedSource({ kind: 'hds-interlude', form: 'snapshot' }), true)
+  assert.equal(isInjectedSource({ kind: 'plugin:hds-interlude', form: 'snapshot' }), true)
+  assert.equal(isInjectedSource({ kind: 'hds-interlude', form: 'notice', summary: '自动生活推进（本轮可能发消息）' }), true)
+  assert.equal(isInjectedSource({ kind: 'hds-interlude', form: 'notice', summary: '幕间到点：提醒喝水' }), true)
 })
 
 ok('draftFromEvent：无正文的控制事件不进账本', () => {

@@ -14,6 +14,7 @@
  * 跑同样的用例（应当变红）。两边都符合预期，才算这条性质是承重的。
  */
 import assert from 'node:assert/strict'
+import { caseDir } from '../helpers/tmp.mjs'
 
 import { decide } from '../../lib/qq-im/say.js'
 import { DedupeWindow, handleInbound } from '../../lib/qq-im/inbound.js'
@@ -97,7 +98,7 @@ function makeMessage(id) {
 }
 
 async function runInbound(dedupe) {
-  const bindings = new BindingStore({ home: 'D:/ds-harness-test/111/.tmp-qqim-loadbearing' })
+  const bindings = new BindingStore({ home: caseDir('loadbearing') })
   bindings.set({ conversationKey: 'c2c:USER1', sessionId: 'sess-1', botId: 'qq' })
   let injected = 0
   const statuses = []

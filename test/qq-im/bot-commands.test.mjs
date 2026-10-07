@@ -7,6 +7,7 @@
  *   B. channel 入站拦截：命令消息被回投、**不进模型**；普通消息照常注入。
  */
 import assert from 'node:assert/strict'
+import { caseDir } from '../helpers/tmp.mjs'
 import path from 'node:path'
 import fs from 'node:fs'
 
@@ -20,7 +21,7 @@ async function check(label, fn) {
   catch (error) { failed += 1; console.error(`  FAIL ${label}\n       ${error?.message ?? error}`) }
 }
 
-const TEST_HOME = path.join('D:/ds-harness-test/111/.tmp-qqim-botcmds', String(Date.now()))
+const TEST_HOME = caseDir('botcmds')
 fs.mkdirSync(TEST_HOME, { recursive: true })
 process.env.DSH_HOME = TEST_HOME
 

@@ -10,9 +10,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { resolveSecret, QqCredentialError } from '../../lib/qq-im/qq.js'
+import { caseDir } from '../helpers/tmp.mjs'
 
-const TMP = path.join('D:/ds-harness-test/111/.tmp-qqim-secret', String(Date.now()))
-fs.mkdirSync(TMP, { recursive: true })
+const TMP = caseDir('credential-resolve')
 process.env.DSH_HOME = TMP
 fs.writeFileSync(path.join(TMP, '.credentials.yaml'), [
   'DSH_QQBOT_APP_SECRET: secretA',

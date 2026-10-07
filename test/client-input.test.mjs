@@ -465,5 +465,145 @@ await check('老配置 deliverAutoAdvance=false 时，面板开关如实显示�
   assert.equal(box.props.checked, false, '老开关关着时面板该显示关，而不是开着')
 })
 
+/* --------------------------------------------------------- 视觉结构（样式回归） */
+
+console.log('\n面板视觉结构：样式令牌与布局类')
+
+await check('根容器带 hdsi 类（全局 CSS 挂载点）', async () => {
+  const tree = await mount({})
+  const root = tree && tree.tag === 'div' ? tree : all(tree)[0]
+  assert.equal(root.props.className, 'hdsi', '根容器应有 hdsi class')
+})
+
+await check('分区卡片带 hdsi-section 类，标题带 accent 竖条', async () => {
+  let tree = await mount({})
+  tree = switchTab(tree, '节奏')
+  const sections = all(tree).filter(el => el.props && el.props.className === 'hdsi-section')
+  assert.ok(sections.length >= 1, '应有至少一个分区卡片')
+  const heading = all(tree).find(el => el.tag === 'div' && textOf(el) === '功能开关'
+    && el.props.style && el.props.style.borderLeft)
+  assert.ok(heading, '标题应有 accent 竖条样式（borderLeft）')
+})
+
+await check('保存按钮用主色（buttonPrimary）', async () => {
+  const tree = await mount({})
+  const saveBtn = all(tree).find(el => el.tag === 'button' && textOf(el) === '保存')
+  assert.ok(saveBtn, '保存按钮存在')
+  assert.ok(saveBtn.props.style.background, '保存按钮有背景色（主色）')
+})
+
+await check('未保存状态是胶囊徽章（badge）而不是纯文本', async () => {
+  const tree = await mount({})
+  const badges = all(tree).filter(el => el.props && el.props.style && (el.props.style.borderRadius === 999))
+  assert.ok(badges.length >= 1, '应有至少一个胶囊徽章（已是最新）')
+})
+
+await check('Tab 栏是胶囊容器（tabs 有背景与圆角）', async () => {
+  const tree = await mount({})
+  const tabs = all(tree).find(el => el.props && el.props.style && el.props.style.borderRadius === 10
+    && Array.isArray(el.props.children) && el.props.children.some(c => c && c.tag === 'button'))
+  assert.ok(tabs, 'Tab 容器应有圆角胶囊样式')
+})
+
+await check('新增开关 Urge 与时间导演渲染在功能区', async () => {
+  let tree = await mount({})
+  tree = switchTab(tree, '节奏')
+  const labels = all(tree)
+    .filter(el => el.tag === 'span' && /Urge 弹性推进|时间导演/.test(textOf(el)))
+    .map(el => textOf(el))
+  assert.ok(labels.some(t => t.includes('Urge 弹性推进')), `Urge 开关存在：${JSON.stringify(labels)}`)
+  assert.ok(labels.some(t => t.includes('时间导演')), `时间导演开关存在：${JSON.stringify(labels)}`)
+})
+
+/* --------------------------------------------------------- 开关渲染（回归） */
+
+console.log('\n开关渲染：内联开关样式（曾因内联/外部优先级冲突而错乱）')
+
+/** 按开关文案找到同一行里的 checkbox。 */
+function switchByLabel(tree, labelText) {
+  const label = all(tree).find(el => el.tag === 'span' && textOf(el).includes(labelText))
+  assert.ok(label, `找不到开关「${labelText}」`)
+  const row = all(tree).find(el => {
+    const kids = el.props && el.props.children
+    return Array.isArray(kids) && kids.includes(label)
+  })
+  assert.ok(row, `找不到「${labelText}」所在的开关行`)
+  const box = all(row).find(el => el.tag === 'input' && el.props.type === 'checkbox')
+  assert.ok(box, `「${labelText}」这一行没有 checkbox`)
+  return box
+}
+
+await check('开关尺寸来自内联样式（36×20 胶囊，而不是 15×15 小方块）', async () => {
+  // 回归：早先 S.check 里写死 width/height 15，而开关画法写在注入的 CSS 里
+  // （34×18）——内联优先级更高，于是 CSS 被整个盖掉：轨道压成 15×15 的圆、
+  // 14px 滑块几乎填满轨道，:checked 的 translateX(16px) 又把滑块推出盒子外。
+  let tree = await mount({})
+  tree = switchTab(tree, '节奏')
+  const st = switchByLabel(tree, '每回合都注入当前时间').props.style
+  assert.equal(st.width, 36, `开关宽度应是 36（内联），实际 ${st.width}`)
+  assert.equal(st.height, 20, `开关高度应是 20（内联），实际 ${st.height}`)
+  assert.equal(st.borderRadius, 999, '轨道应是胶囊圆角')
+  assert.equal(st.appearance, 'none', '应移除原生外观（自绘开关）')
+  assert.equal(st.boxSizing, 'border-box', '应使用 border-box，尺寸才可预期')
+})
+
+await check('滑块与轨道用背景图表达（不依赖 ::after 伪元素）', async () => {
+  // `<input>` 是替换元素，`::after` 在各浏览器上支持不一致——改用背景图后
+  // 无论渲染环境如何都能画出滑块。
+  let tree = await mount({})
+  tree = switchTab(tree, '节奏')
+  const st = switchByLabel(tree, '每回合都注入当前时间').props.style
+  assert.match(String(st.backgroundImage), /radial-gradient/, '滑块应是 radial-gradient 背景图')
+  assert.equal(st.backgroundRepeat, 'no-repeat')
+  assert.equal(st.backgroundSize, '16px 16px')
+})
+
+await check('开/关两态的轨道色与滑块位置不同（checked 由渲染期计算）', async () => {
+  // checked 状态不靠 CSS 的 :checked（外部样式可能穿不进 shadow DOM），
+  // 而是渲染期按 checked 选择两套内联样式——这条用例直接钉这个契约。
+  let tree = await mount({})
+  tree = switchTab(tree, '节奏')
+  const onBox = switchByLabel(tree, '主动联系') // 默认 true
+  assert.equal(onBox.props.checked, true, '前置条件：这个开关默认开')
+  const offBox = switchByLabel(tree, '每回合都注入当前时间')
+  assert.equal(offBox.props.checked, false, '前置条件：这个开关默认关')
+
+  const on = onBox.props.style
+  const off = offBox.props.style
+  assert.notEqual(on.backgroundColor, off.backgroundColor, '开/关轨道色必须不同')
+  assert.notEqual(on.backgroundPosition, off.backgroundPosition, '开/关滑块位置必须不同')
+  assert.match(String(on.backgroundPosition), /right/, '开：滑块靠右')
+  assert.match(String(off.backgroundPosition), /left/, '关：滑块靠左')
+})
+
+await check('切换开关后内联样式随之改变（不依赖重新挂载）', async () => {
+  let tree = await mount({})
+  tree = switchTab(tree, '节奏')
+  const before = switchByLabel(tree, '主动联系')
+  assert.equal(before.props.checked, true, '前置条件：默认开')
+  const beforePos = before.props.style.backgroundPosition
+  before.props.onChange({ target: { checked: false } })
+  tree = rerender()
+  const after = switchByLabel(tree, '主动联系')
+  assert.equal(after.props.checked, false)
+  assert.notEqual(after.props.style.backgroundPosition, beforePos, '关闭后滑块位置应改变')
+  assert.match(String(after.props.style.backgroundPosition), /left/, '关闭后滑块靠左')
+})
+
+await check('所有开关都带内联开关样式（没有漏配的裸 checkbox）', async () => {
+  // 防漏：新增开关时忘了用 checkStyle(...) 会退化成原生 checkbox，
+  // 在页面里就是一个突兀的小方块。
+  let tree = await mount({})
+  for (const name of ['节奏', '聊天']) {
+    tree = switchTab(tree, name)
+    const boxes = all(tree).filter(el => el.tag === 'input' && el.props.type === 'checkbox')
+    assert.ok(boxes.length > 0, `「${name}」页应有开关`)
+    for (const box of boxes) {
+      assert.equal(box.props.style.width, 36, `「${name}」页有开关没配 checkStyle（width=${box.props.style.width}）`)
+      assert.equal(box.props.style.borderRadius, 999, `「${name}」页有开关没配 checkStyle`)
+    }
+  }
+})
+
 console.log(`\n设置页输入：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)

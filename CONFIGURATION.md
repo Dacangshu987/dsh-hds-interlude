@@ -197,6 +197,52 @@
 
 ---
 
+## 7.5 `urge`（Urge 弹性推进）
+
+> 移植自上游 1.0.0-beta8。默认**关闭**——开启前自动推进是固定间隔，行为零变化。
+> 开启后推进节奏跟随**真实消息热度**：刚聊完时下一次推进快一些，冷下来逐步变慢；
+> 模型还可以在推进/跟进/到期回合的正文末尾返回 `urge:{...}` 调度交接
+> （`value` 意愿 / `pace:"slow"` 慢速 / `suggestedDelayMinutes` 建议延迟 /
+> `basisQuote` 必须逐字命中正文的引文），被采纳后影响**下一次**推进的时机。
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `urge.enabled` | boolean | `false` | 启用 Urge 弹性推进。 |
+| `urge.frequency` | enum | `medium` | `low`（更慢）/ `medium` / `high`（更快）/ `custom`（用 advanced 自定义）。 |
+| `urge.proactiveWillingnessThreshold` | number | `0.4` | 模型意愿达到此值且目标可联系时，武装一次主动联系意图。 |
+| `urge.advanced.hotMin/hotMax` | number | `10/20` | 热络期推进间隔范围（分钟）。 |
+| `urge.advanced.idleMin/idleMax` | number | `35/55` | 平淡期推进间隔范围（分钟）。 |
+| `urge.advanced.burstMin/burstMax` | number | `3/7` | 已确认联系爆发期间隔范围（分钟）。 |
+| `urge.advanced.slowMin/slowMax` | number | `110/130` | 慢速（睡眠/专注）间隔范围（分钟）。 |
+| `urge.advanced.halfLifeMinutes` | number | `45` | 热度半衰期（分钟）。 |
+| `urge.advanced.burstThreshold` | number | `0.75` | 意愿达到此值且非慢速进入爆发期。 |
+| `urge.advanced.jitter` | number | `0.15` | 模型 value 的随机抖动。 |
+| `urge.advanced.extremeChance` | number | `0.03` | 极值概率（忽略模型 value 用随机值，防模型故意填低/高）。 |
+| `urge.advanced.burstTtlMinutes` | number | `35` | 爆发期有效期（分钟）。 |
+| `urge.advanced.burstBudget` | number | `3` | 爆发期内最大联系次数。 |
+| `urge.advanced.burstContactMinMinutes` | number | `5` | 爆发期内两次联系最短间隔（分钟）。 |
+
+> Urge 只决定**下一次推进的时机**，绝不直接决定是否联系对方、也不进记忆——
+> 联系决策仍由 Agency 窗口与到期待办负责（与上游定位一致）。
+
+---
+
+## 7.6 `timelineDirector`（时间导演）
+
+> 移植自上游 beta6 ~ 1.0.1-beta1 的时间导演轻量化。默认**关闭**。
+> 开启后，自动生活推进时插件会在提示里请求模型输出一段相对时间账本
+> （`<timeline_plan>{...}</timeline_plan>` JSON 块：1–4 个 `{at, kind, summary}` 节点
+> + 可选的 carry）。解析成功则账本成为本段时间的**权威时间线**（`state.timelinePlan`，
+> carry 并入时间线承载），正文里的账本块被剥离、不污染故事；解析失败照常走
+> timeline-guard 的退避/熔断，降级为无账本推进。账本是**建议**不是既成事实，
+> 不做笃定的未来预测（与上游语义一致）。
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `timelineDirector.enabled` | boolean | `false` | 启用时间导演：自动推进时请求模型输出相对时间账本。 |
+
+---
+
 ## 8. `im`（聊天软件通道）
 
 > **可视化面板已覆盖本节大部分字段**：设置 → 幕间系统 → **「聊天」Tab**。

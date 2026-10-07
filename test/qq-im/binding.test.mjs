@@ -2,6 +2,7 @@
  * binding.js 的测试：绑定持久化、原子写、遗留数据迁移。
  */
 import assert from 'node:assert/strict'
+import { caseDir } from '../helpers/tmp.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -20,7 +21,7 @@ function eq(actual, expected, label) {
 let counter = 0
 function tempHome() {
   counter += 1
-  return path.join('D:/ds-harness-test/111/.tmp-qqim-bind', `case-${counter}-${Date.now()}`)
+  return caseDir('bind')
 }
 
 /* ------------------------------------------------------------ 键解析 */

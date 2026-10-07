@@ -119,6 +119,56 @@ check('imageOfToolCall：非发图工具/坏 JSON/非法来源 → null', () => 
   eq(imageOfToolCall(toolCall('interlude_send_image', {})), null, '没给来源')
 })
 
+/*
+ * 回归：`interlude_send_image({ name })` 是**工具文档首推的用法**
+ * （"最省事的用法是只给 name（如「开心」），会从表情库里找"）。
+ *
+ * 修之前 imageOfToolCall 不认 name → 图片被**静默丢弃**，而工具 execute 还回答
+ * "已记下表情「开心」，将在本回合结束时发送"——模型以为发出去了，用户什么都没收到。
+ * 这类失败不报错、不留痕，只能靠用例钉住。
+ */
+check('imageOfToolCall：只给 name 时用注入的 resolver 解析出路径（回归）', () => {
+  const resolved = []
+  const image = imageOfToolCall(
+    toolCall('interlude_send_image', { name: '开心' }),
+    'interlude_send_image',
+    { resolveSticker: (name) => { resolved.push(name); return 'D:/stickers/mine/开心.png' } },
+  )
+  eq(resolved, ['开心'], 'resolver 应收到模型给的表情名')
+  eq(image, { kind: 'image', source: { localPath: 'D:/stickers/mine/开心.png' } }, '应解析成本地图片')
+})
+
+check('imageOfToolCall：name 但没有 resolver → null（不伪造路径）', () => {
+  eq(imageOfToolCall(toolCall('interlude_send_image', { name: '开心' })), null,
+    '没有 resolver 时返回 null，让上层如实报错')
+})
+
+check('imageOfToolCall：resolver 抛错 / 返回空 → 安静降级为 null', () => {
+  const boom = () => { throw new Error('disk gone') }
+  eq(imageOfToolCall(toolCall('interlude_send_image', { name: 'x' }), 'interlude_send_image', { resolveSticker: boom }), null,
+    'resolver 抛错不该穿透')
+  eq(imageOfToolCall(toolCall('interlude_send_image', { name: 'x' }), 'interlude_send_image', { resolveSticker: () => undefined }), null,
+    '库里没有这个名字 → null')
+})
+
+check('显式 file_path 优先于 name（给了确切来源就用确切的）', () => {
+  const image = imageOfToolCall(
+    toolCall('interlude_send_image', { name: '开心', file_path: 'D:/exact/b.png' }),
+    'interlude_send_image',
+    { resolveSticker: () => 'D:/stickers/mine/开心.png' },
+  )
+  eq(image, { kind: 'image', source: { localPath: 'D:/exact/b.png' } }, 'file_path 优先')
+})
+
+check('collectOrderedItems 也解析 name（交互式收集走的是它）', () => {
+  const { items, images } = collectOrderedItems(
+    [toolCall('interlude_send_image', { name: '无语' })],
+    { resolveSticker: () => 'D:/stickers/mine/无语.png' },
+  )
+  eq(images.length, 1, '应收集到 1 张')
+  eq(items[0], { kind: 'image', source: { localPath: 'D:/stickers/mine/无语.png' } }, '条目应是解析后的图片')
+})
+
 /* ------------------------------------------------------------ 有序收集 */
 
 check('图片与文字按调用顺序交错（顺序是需求，不是实现细节）', () => {

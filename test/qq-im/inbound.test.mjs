@@ -7,6 +7,7 @@ import {
   DedupeWindow, routeInbound, renderInboundText, handleInbound, DEDUPE_DEFAULTS, isGroupMention,
 } from '../../lib/qq-im/inbound.js'
 import { BindingStore } from '../../lib/qq-im/binding.js'
+import { caseDir } from '../helpers/tmp.mjs'
 
 let passed = 0
 function check(label, fn) { fn(); passed += 1 }
@@ -29,7 +30,7 @@ function eq(actual, expected, label) {
 
 /** 一个临时的绑定表（不污染真实数据）。 */
 function tempStore(suffix = 'inbound') {
-  return new BindingStore({ home: `D:/ds-harness-test/111/.tmp-qqim-${suffix}-${Date.now()}` })
+  return new BindingStore({ home: caseDir(`inbound-${suffix}`) })
 }
 
 /* ------------------------------------------------------------ 幂等窗口 */

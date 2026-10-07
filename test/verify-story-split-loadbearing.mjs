@@ -24,11 +24,18 @@ const originalStory = sandbox.read('lib/story.js')
 /** 跑一个测试文件，返回红掉的用例行。 */
 const runTests = (file) => sandbox.run(file)
 
-/** 改版前的行为：整段写回直接投递（不问有没有台词）。 */
+/** 改版前的行为：整段写回直接投递（不问有没有台词、不带图）。 */
 function makeSendWholeStoryIndex(src) {
-  const marker = '    const delivered = await deliverToIm({\n      key, state, cfg, text: decision.messages.join(\'\\n\'), reason: \'故事续写中的发言\',\n    })'
-  if (!src.includes(marker)) return null
-  return src.replace(marker, "    const delivered = await deliverToIm({\n      key, state, cfg, text: written, reason: '自动生活推进',\n    })")
+  // 锚点跟着实现走：投递现在按「有没有图」在 items / text 之间选，所以固定的
+  // 整段字符串不再是稳定锚点。这里改成「定位那次 deliverToIm 调用、整段替换」，
+  // 注入的 buggy 版本仍然表达「整段原样投递」这个旧行为。
+  const startMarker = '    const delivered = await deliverToIm({\n      key, state, cfg,'
+  const start = src.indexOf(startMarker)
+  if (start < 0) return null
+  const end = src.indexOf('\n    })', start)
+  if (end < 0) return null
+  const buggy = "    const delivered = await deliverToIm({\n      key, state, cfg, text: written, reason: '自动生活推进',\n    })"
+  return src.slice(0, start) + buggy + src.slice(end + '\n    })'.length)
 }
 
 /** 只把「间隔」这一关拆掉：让它每次都发。 */

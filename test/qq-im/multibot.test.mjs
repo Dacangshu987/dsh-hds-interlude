@@ -9,6 +9,7 @@
  *   - 入站路由：带 botId 的查找命中自己的绑定，不串号。
  */
 import assert from 'node:assert/strict'
+import { caseDir } from '../helpers/tmp.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -28,7 +29,7 @@ function eq(actual, expected, label) {
 let counter = 0
 function tempHome() {
   counter += 1
-  return path.join('D:/ds-harness-test/111/.tmp-qqim-multibot', `case-${counter}-${Date.now()}`)
+  return caseDir('multibot')
 }
 
 /* ------------------------------------------------------------ A-1：复合键隔离 */

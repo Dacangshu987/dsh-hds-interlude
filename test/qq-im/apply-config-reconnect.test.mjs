@@ -14,13 +14,14 @@
  * 本测试验证这两条，不依赖真实 SDK（transport 注入 + resolveConfig 契约断言）。
  */
 import assert from 'node:assert/strict'
+import { caseDir } from '../helpers/tmp.mjs'
 import path from 'node:path'
 import fs from 'node:fs'
 
 import { installQqIm } from '../../lib/qq-im/channel.js'
 import { resolveConfig } from '../../lib/qq-im/config.js'
 
-const TEST_HOME = path.join('D:/ds-harness-test/111/.tmp-qqim-acr', String(Date.now()))
+const TEST_HOME = caseDir('acr')
 fs.mkdirSync(TEST_HOME, { recursive: true })
 process.env.DSH_HOME = TEST_HOME
 
