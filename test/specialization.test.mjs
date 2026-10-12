@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict'
 import {
   detectFamily, autoTier, inferSpecialty, familyOverrides, resolveSpecialtyBlocks,
-  TYPED_FULL, TYPED_CONDENSED, TYPED_KIMI_EXTRA, FAMILY_PATTERNS,
+  TYPED_MESSAGES_BASE, LIVED_LENGTH_PROMPT, LIVED_WRITING_PROMPT, FAMILY_PATTERNS,
 } from '../lib/specialization.js'
 
 let passed = 0
@@ -86,52 +86,80 @@ check('inferSpecialty：auto / 手动 / off', () => {
   assert.deepEqual(inferSpecialty(''), { tier: 'full', family: 'generic', source: 'auto', probe: '' })
 })
 
-/* ─────────────────── D. 家族块最小偏移 ─────────────────── */
+/* ─────────────────── D. 家族块最小偏移（rc50 上游形态） ─────────────────── */
 
-check('familyOverrides：最小偏移（打字块替换 + 至多一条新增行）', () => {
+check('familyOverrides：与上游 rc50 的家族覆盖表逐项一致', () => {
+  // gemini-flash：长度块 + 打字块，**没有** extraAfterPhase（rc50 删掉了
+  // EXTRA_GEMINI_FLASH，内容已并入 LENGTH_GEMINI_FLASH）。
   const flash = familyOverrides('gemini-flash')
-  assert.equal(flash.typed, TYPED_CONDENSED, 'gemini-flash 应换精简打字块')
-  assert.ok(flash.extraAfterPhase, '并补一条行文基调')
+  assert.ok(flash.length, 'gemini-flash 应有专属长度块')
+  assert.ok(flash.typed, 'gemini-flash 应有精简打字块')
+  assert.equal(flash.extraAfterPhase, undefined, 'rc50 已移除 gemini-flash 的独立家族行')
+
+  // kimi：**替换** typed（上游是 replace 而非追加）
   const kimi = familyOverrides('kimi')
-  assert.equal(kimi.typed, undefined, 'kimi 不替换整块，只在完整块后补一段')
-  assert.equal(kimi.typedExtra, TYPED_KIMI_EXTRA)
-  for (const family of ['claude', 'glm', 'deepseek']) {
-    const o = familyOverrides(family)
-    assert.ok(o.extraAfterPhase, `${family} 应有一条家族行`)
-    assert.equal(o.typed, undefined, `${family} 不该整块替换`)
+  assert.ok(kimi.typed, 'kimi 应替换打字块')
+  assert.ok(kimi.typed.includes('ambivalence is a normal state'), 'kimi 块含「矛盾是正常状态」')
+  assert.equal(kimi.typedExtra, undefined, 'rc50 不再用 typedExtra 追加形态')
+
+  // 各有专属长度块的家族
+  for (const family of ['claude', 'deepseek', 'grok', 'gpt']) {
+    assert.ok(familyOverrides(family).length, `${family} 应有专属长度块`)
   }
-  for (const family of ['gemini', 'gpt', 'grok', 'generic', 'nope']) {
+  // 只有家族行的
+  assert.ok(familyOverrides('glm').extraAfterPhase, 'glm 应有一条家族行')
+  assert.equal(familyOverrides('glm').length, undefined, 'glm 无专属长度块')
+  // 无偏移
+  for (const family of ['gemini', 'generic', 'nope']) {
     assert.deepEqual(familyOverrides(family), {}, `${family} 应无偏移`)
   }
 })
 
-check('familyOverrides：deepseek 家族行覆盖 rc28 修复的三个语义点', () => {
-  // 上游 rc28 修复点：① 发送通道每回合必需 ② 历史不是模板 ③ 不给「省略」留口。
-  const deepseek = familyOverrides('deepseek')
-  assert.ok(deepseek.extraAfterPhase.includes('每回合独立'), '① 通道每回合必需')
-  assert.ok(deepseek.extraAfterPhase.includes('不是模板'), '② 历史不是模板')
-  assert.ok(deepseek.extraAfterPhase.includes('interlude_say'), '落在本仓的发送工具上')
-  assert.ok(deepseek.extraAfterPhase.includes('不要因为最近几轮没调用就认为这轮可以省略'), '③ 堵住惯性省略')
-  assert.ok(deepseek.extraAfterPhase.includes('不说时安静结束即可'), '保留合法不回的出口（不矫枉成强制秒回）')
+check('familyOverrides：deepseek 家族行保留 rc28+rc50 的全部语义点', () => {
+  // 上游语义：① 可承载回复的回合必需 ② 自主推进回合豁免
+  //          ③ 历史不是模板 ④ 不能因历史没有就当作可选 ⑤ 只从本轮剧本决定
+  const line = familyOverrides('deepseek').extraAfterPhase
+  assert.ok(line.includes('every turn that can carry a reply'), '① 限定适用回合')
+  assert.ok(line.includes('Independent-life advance turns send nothing'), '② 自主推进豁免')
+  assert.ok(line.includes('history, not a template'), '③ 历史不是模板')
+  assert.ok(line.includes('treat the call as optional because history omits it'), '④ 堵住惯性省略')
+  assert.ok(line.includes('Decide whether she speaks only from the script you just wrote'), '⑤ 只从本轮决定')
 })
 
-check('resolveSpecialtyBlocks：打字块选择与家族行至多一条', () => {
+check('resolveSpecialtyBlocks：长度块/打字块/家族行按家族分化', () => {
   const flash = resolveSpecialtyBlocks('gemini-3-flash')
   assert.equal(flash.tier, 'lite')
-  assert.equal(flash.typed, TYPED_CONDENSED)
-  assert.ok(flash.extraLine.includes('行文基调'))
+  assert.ok(flash.length.includes('Prefer concrete, sensory detail'), 'gemini-flash 用专属长度块')
+  assert.equal(flash.extraLine, '', 'gemini-flash 不再有家族行')
+
   const claude = resolveSpecialtyBlocks('claude-sonnet')
   assert.equal(claude.tier, 'full')
-  assert.equal(claude.typed, TYPED_FULL, 'claude 用完整打字块')
-  assert.ok(claude.extraLine.includes('场景不必有整齐的收尾'))
+  assert.equal(claude.typed, TYPED_MESSAGES_BASE, 'claude 用完整打字块')
+  assert.ok(claude.length.includes('Ground each passage in concrete sensory detail'), 'claude 长度块')
+  assert.ok(claude.extraLine.includes('Scenes do not need tidy closure'), 'claude 家族行')
+
   const kimi = resolveSpecialtyBlocks('moonshot-v1')
-  assert.ok(kimi.typed.startsWith(TYPED_FULL), 'kimi = 完整块 + 矛盾段')
-  assert.ok(kimi.typed.includes('矛盾是正常状态'))
-  assert.equal(kimi.extraLine, '', 'kimi 不该再有第二条新增行')
+  assert.ok(kimi.typed.includes('ambivalence is a normal state'), 'kimi 打字块含矛盾段')
+  assert.equal(kimi.length, LIVED_LENGTH_PROMPT, 'kimi 无专属长度块 → 全局默认')
+  assert.equal(kimi.extraLine, '', 'kimi 无家族行')
+
+  const deepseek = resolveSpecialtyBlocks('deepseek-chat')
+  assert.equal(deepseek.tier, 'standard')
+  assert.ok(deepseek.length.includes('never chain four-character idioms'), 'deepseek 长度块')
+  assert.ok(deepseek.extraLine.includes('TRANSPORT IS PER-TURN'), 'deepseek 家族行')
+
   const generic = resolveSpecialtyBlocks('')
   assert.equal(generic.tier, 'full')
-  assert.equal(generic.typed, TYPED_FULL)
+  assert.equal(generic.typed, TYPED_MESSAGES_BASE)
+  assert.equal(generic.length, LIVED_LENGTH_PROMPT)
   assert.equal(generic.extraLine, '')
+})
+
+check('上游写作常量：LIVED_WRITING_PROMPT / LIVED_LENGTH_PROMPT 逐字在位', () => {
+  assert.ok(LIVED_WRITING_PROMPT.startsWith('Write this as a living stage script in prose'))
+  assert.ok(LIVED_WRITING_PROMPT.includes('it does not replace the protagonist’s world as the center of the scene'))
+  assert.ok(LIVED_LENGTH_PROMPT.startsWith('Length follows what actually happens'))
+  assert.ok(LIVED_LENGTH_PROMPT.includes('Continue from established circumstances'))
 })
 
 /* ─────────────────── E. 渲染落地 ─────────────────── */
@@ -145,26 +173,49 @@ const render = (specialization) => String(renderRules({
 
 check('渲染：留空 = 完整打字块、无家族行（默认不影响现状）', () => {
   const text = render(undefined)
-  assert.ok(text.includes('一张猫的贴图可能只是「看到了」'), '完整块应含猫贴图例子')
-  assert.ok(!text.includes('行文基调：具体、不修饰'))
-  assert.ok(!text.includes('矛盾是正常状态'))
+  assert.ok(text.includes('A cat sticker may mean'), '完整块应含猫贴图例子')
+  assert.ok(!text.includes('Prefer concrete, sensory detail'), '不该混入 gemini-flash 长度块')
+  assert.ok(!text.includes('ambivalence is a normal state'))
 })
 
-check('渲染：gemini-flash → 精简块 + 家族行；且没有第二条新增行', () => {
+check('渲染：gemini-flash → 精简打字块、无家族行（rc50）', () => {
+  // 注意长度块走的是 `storyRules`（写作规则段），不在 renderRules 的 IM 规则里；
+  // 这里只验打字块与家族行。长度块另见下面的 storyRules 用例。
   const text = render({ mode: 'auto', modelProbe: 'gemini-3-flash' })
-  assert.ok(text.includes('真人打出来的聊天消息是朴素、具体、直接的'), '应使用精简版')
-  assert.ok(!text.includes('一张猫的贴图可能只是「看到了」'), '精简版不带猫贴图延展')
-  assert.ok(text.includes('行文基调：具体、不修饰'))
-  assert.ok(!text.includes('场景不必有整齐的收尾'), '不该混入别的家族行')
+  assert.ok(text.includes('A chat message typed by a real person is plain, specific and direct'), '精简版要点')
+  assert.ok(
+    !text.includes('Sending the same sticker repeatedly is also an intentional expressive act — insistence'),
+    '精简版不带完整版那段延展',
+  )
+  assert.ok(!text.includes('Scenes do not need tidy closure'), '不该混入别的家族行')
 })
 
-check('渲染：claude 只补一条家族行；kimi 补矛盾段', () => {
+check('渲染：claude 用完整打字块 + 家族行；kimi 用矛盾段', () => {
   const claude = render({ mode: 'auto', modelProbe: 'claude-sonnet-4' })
-  assert.ok(claude.includes('场景不必有整齐的收尾'))
-  assert.ok(claude.includes('一张猫的贴图可能只是「看到了」'), 'claude 用完整打字块')
+  assert.ok(claude.includes('Scenes do not need tidy closure'), 'claude 家族行')
+  assert.ok(claude.includes('A cat sticker may mean'), 'claude 用完整打字块')
   const kimi = render({ mode: 'auto', modelProbe: 'moonshot-v1' })
-  assert.ok(kimi.includes('矛盾是正常状态'))
-  assert.ok(!kimi.includes('场景不必有整齐的收尾'))
+  assert.ok(kimi.includes('ambivalence is a normal state'), 'kimi 矛盾段')
+  assert.ok(!kimi.includes('Scenes do not need tidy closure'), '不该混入 claude 家族行')
+})
+
+/* ─────────────────── F. 长度块落地（storyRules） ─────────────────── */
+
+const { storyRules } = await import('../lib/render.js')
+const story = (specialization) => String(storyRules(
+  true,
+  resolveSpecialtyBlocks(specialization?.modelProbe ?? '', specialization?.mode ?? 'auto').length,
+))
+
+check('storyRules：含上游写作基调与长度块，且长度块按家族分化', () => {
+  const generic = story(undefined)
+  assert.ok(generic.includes(LIVED_WRITING_PROMPT.slice(0, 40)), '写作基调在位')
+  assert.ok(generic.includes(LIVED_LENGTH_PROMPT.slice(0, 40)), '默认长度块')
+  const flash = story({ mode: 'auto', modelProbe: 'gemini-3-flash' })
+  assert.ok(flash.includes('Prefer concrete, sensory detail over elevated wording'), 'gemini-flash 长度块')
+  assert.ok(!flash.includes(LIVED_LENGTH_PROMPT.slice(0, 40)), '不该同时出现默认长度块')
+  const ds = story({ mode: 'auto', modelProbe: 'deepseek-chat' })
+  assert.ok(ds.includes('never chain four-character idioms'), 'deepseek 长度块')
 })
 
 console.log(`\n模型特化：通过 ${passed} 项，失败 ${failed} 项`)

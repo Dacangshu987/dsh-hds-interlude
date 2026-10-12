@@ -102,15 +102,16 @@ check('buildEpisodeIndex：空/损坏输入安全', () => {
 
 /* ───────── ③ DeepSeek 家族行收窄（rc50） ───────── */
 
-check('DeepSeek 家族行：收窄成「确实要说话的回合」才必需（rc50）', () => {
+check('DeepSeek 家族行：收窄成「可承载回复的回合」才必需（rc50，上游英文原文）', () => {
+  // 对齐上游 rc50：家族行改用 `EXTRA_DEEPSEEK` 的**英文语域**（本仓把「传输对象」
+  // 适配成 `interlude_say` 工具调用，其余语义点与英文措辞保留）。
   const line = familyOverrides('deepseek').extraAfterPhase
-  assert.ok(line.includes('本轮若确实要对她说话'), '应限定适用回合')
-  assert.ok(line.includes('自主生活推进'), '应明确豁免自主推进回合')
-  assert.ok(line.includes('本来就没有可发的话'), '应说明"没发"不等于漏发')
-  // 原有语义不能丢。
-  assert.ok(line.includes('interlude_say'))
-  assert.ok(line.includes('不是模板'))
-  assert.ok(line.includes('安静结束'))
+  assert.ok(line.startsWith('TRANSPORT IS PER-TURN'), '保留上游标题')
+  assert.ok(line.includes('every turn that can carry a reply'), '① 限定适用回合')
+  assert.ok(line.includes('Independent-life advance turns send nothing'), '② 自主推进豁免')
+  assert.ok(line.includes('history, not a template'), '③ 历史不是模板')
+  assert.ok(line.includes('treat the call as optional because history omits it'), '④ 堵住惯性省略')
+  assert.ok(line.includes('Decide whether she speaks only from the script you just wrote'), '⑤ 只从本轮决定')
 })
 
 console.log(`\nrc50 第二批：通过 ${passed} 项，失败 ${failed} 项`)

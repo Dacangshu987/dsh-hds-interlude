@@ -41,24 +41,32 @@ check('rc5：打字不是把当面话誊上去（只写会真正打出来的字�
 })
 
 check('rc5：每一轮都是独立的选择（无条件反锚定基线）', () => {
+  // 对齐上游 rc50：打字块改用 `TYPED_MESSAGES_BASE` 英文原文（lib/specialization.js）。
+  // 语义点不变——上一轮发了几条不约束这一轮。
   const text = imText()
-  assert.ok(text.includes('每一轮都是独立的选择'), '必须常驻：条数守卫只在检测到锚定后才注入')
-  assert.ok(text.includes('不约束'), '要点明「上一轮发了几条不约束这一轮」')
+  assert.ok(text.includes('Each reply is an independent choice'), '每轮独立选择必须常驻')
+  assert.ok(
+    text.includes('the number of messages in previous replies does not constrain this one'),
+    '要点明「上一轮发了几条不约束这一轮」',
+  )
 })
 
 check('rc7：表情包/图片是元语言（不停在画面本身；连发也是有意表达）', () => {
   const text = imText()
-  assert.ok(text.includes('表情包和图片是**元语言**'))
-  assert.ok(text.includes('不要停在画面本身上'), '必须点明不停留在画面字面')
-  assert.ok(text.includes('猫的贴图'), '应有具体例子（猫贴图可能只是「看到了」）')
-  assert.ok(text.includes('同一个贴图连发多次'), '连发=有意表达这一条也要在')
-  assert.ok(text.includes('有意的表达'))
+  assert.ok(text.includes('Stickers and emoji-like images are a metalanguage'), '元语言基线')
+  assert.ok(
+    text.includes('rather than stopping at the depicted subject'),
+    '必须点明不停留在画面字面',
+  )
+  assert.ok(text.includes('A cat sticker'), '应有具体例子（猫贴图可能只是「看到了」）')
+  assert.ok(text.includes('Sending the same sticker repeatedly'), '连发=有意表达这一条也要在')
+  assert.ok(text.includes('intentional expressive act'))
 })
 
 check('两条规则只在 IM 场景出现（不污染纯 Web 写作）', () => {
   const web = webText()
-  assert.ok(!web.includes('每一轮都是独立的选择'), 'Web 写作不该带 IM 分条基线')
-  assert.ok(!web.includes('表情包和图片是**元语言**'), 'Web 写作不该带贴图元语言规则')
+  assert.ok(!web.includes('Each reply is an independent choice'), 'Web 写作不该带 IM 分条基线')
+  assert.ok(!web.includes('Stickers and emoji-like images are a metalanguage'), 'Web 写作不该带贴图元语言规则')
   // IM 场景同时也应保留既有的「不是每条都必须回」等消息感知规则
   const im = imText()
   assert.ok(im.includes('不是每条消息都必须立刻回'))
