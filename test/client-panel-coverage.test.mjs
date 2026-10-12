@@ -225,6 +225,9 @@ const state = {
         typingMaxDelaySeconds: 8,
         typingJitterRatio: 0.1,
       },
+      // 表情清单上限（对齐上游 Stickers 段）：刻意用非默认值。
+      catalogLimit: 25,
+      maxFileSizeMB: 7,
       forwardLimits: { maxNodes: 10, maxCharacters: 4000, maxDepth: 1 },
       crossConversation: { enabled: true, maxPerTurn: 2, whitelist: ['group:777'] },
     },
@@ -320,6 +323,13 @@ check('聊天页有气泡边界协议三项，且读回配置里的值（rc36）
   eq(checkboxNear(chat, '允许分条发送').props.checked, false, 'splitReplyMessages=false')
   eq(controlNearLabel(chat, '气泡分隔符').props.value, '||', '自定义分隔符')
   eq(checkboxNear(chat, '换行也当分条边界').props.checked, true, 'convertNewlineToSeparator=true')
+})
+
+check('聊天页有表情清单两个上限，且读回配置里的值（Stickers 段）', () => {
+  const inputs = controlsNearLabel(chat, '表情包清单上限')
+  eq(inputs.length, 2, '应当是「条数 + 体积」两个输入')
+  eq(Number(inputs[0].props.value), 25, 'catalogLimit')
+  eq(Number(inputs[1].props.value), 7, 'maxFileSizeMB')
 })
 
 /* ─────────────────── B. 聊天页：转发预算 / 跨群 / 意愿档位 ─────────────────── */

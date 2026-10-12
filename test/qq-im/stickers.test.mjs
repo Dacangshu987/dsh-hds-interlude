@@ -377,6 +377,45 @@ check('纯 face 消息清洗后不为空（回到「这一轮说了话」）', (
   assert.ok(out.trim().length > 0, '不该被清成空——否则这轮会被当作没说话')
 })
 
+/* ════════════════════════════════════════════════════ 清单上限（对齐上游 Stickers 段） */
+
+check('listStickers：maxBytes 过滤超大文件（对齐上游 maxFileSizeMB）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hds-sticker-size-'))
+  tmpRoots.push(dir)
+  // 一个 1KB 的小图 + 一个 5KB 的大图，都放在 mine/ 下。
+  writeSticker({ buffer: Buffer.alloc(1024, 1), dir, ext: '.png' })
+  writeSticker({ buffer: Buffer.alloc(5 * 1024, 2), dir, ext: '.png' })
+
+  const all = listStickers(dir, { limit: 100, maxBytes: 10 * 1024 * 1024 })
+  eq(all.length, 2, '上限宽松时两张都在')
+
+  const small = listStickers(dir, { limit: 100, maxBytes: 2 * 1024 })
+  eq(small.length, 1, '上限 2KB 时只留小的那张')
+  assert.ok(small[0].path, '留下的条目仍带路径')
+  // 关键：这条路径此前没人管——`sticker-harvest` 只在**下载入站图**时看体积，
+  // 用户手工丢进目录的超大图不走那条路，却照样会被塞进模型上下文。
+})
+
+check('listStickers：limit 截断清单条数（对齐上游 catalogLimit）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hds-sticker-limit-'))
+  tmpRoots.push(dir)
+  for (let i = 0; i < 6; i += 1) {
+    writeSticker({ buffer: Buffer.from(`img-${i}`), dir, ext: '.png' })
+  }
+  eq(listStickers(dir, { limit: 100 }).length, 6, '不截断时全部返回')
+  eq(listStickers(dir, { limit: 3 }).length, 3, 'limit=3 应截到 3 条')
+  eq(listStickers(dir, { limit: 1 }).length, 1, 'limit=1 应截到 1 条')
+})
+
+check('listStickers：体积上限的坏值回落到默认，不把整次列举打挂', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hds-sticker-badlim-'))
+  tmpRoots.push(dir)
+  writeSticker({ buffer: Buffer.from('x'), dir, ext: '.png' })
+  for (const bad of [0, -1, Number.NaN, undefined, 'nope']) {
+    eq(listStickers(dir, { limit: 100, maxBytes: bad }).length, 1, `maxBytes=${String(bad)} 应回默认上限`)
+  }
+})
+
 /* ════════════════════════════════════════════════════ 清理 */
 
 for (const dir of tmpRoots) {
