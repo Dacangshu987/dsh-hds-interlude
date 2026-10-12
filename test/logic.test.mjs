@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 
 import { resolveTimezone, storyLocalTimeContext, calendarDayKey, localClockMinutes, inRestWindow, sameLocalDay, formatGap, resolveZone } from '../lib/clock.js'
-import { createAlterSystemState, normalizeAlterValue, advanceAlterSystem, completeAlterAnalysis, emotionalOffsetForPrompt, calculateAlterThreshold, resolveAlterSystemConfig } from '../lib/alter.js'
+import { createAlterSystemState, normalizeAlterValue, advanceAlterSystem, completeAlterAnalysis, alterAnalysisApplied, emotionalOffsetForPrompt, calculateAlterThreshold, resolveAlterSystemConfig } from '../lib/alter.js'
 import { resolveAgencyConfig, normalizeAgencyWindowState, evaluateAgencyCapacity, proactiveCandidateFingerprint, proactiveOriginBypassesOrdinaryInterval } from '../lib/agency.js'
 import { resolveSchedulePreplanConfig, materializeSchedulePreplan, schedulePreplanWindow, nextSchedulePreplanTransition, applySchedulePreplanProposal } from '../lib/preplan.js'
 import { emptyState, addFact, rankFacts, closeFact } from '../lib/state.js'
@@ -100,14 +100,56 @@ check('advanceAlterSystem：激活后反向位移衰减权重并清除底色', (
   assert.equal(after.offsetExpired, true)
 })
 
-check('completeAlterAnalysis：生成底色并清零累计', () => {
+check('completeAlterAnalysis：生成底色并消费掉累计（rc50 语义）', () => {
   const cfg = resolveAlterSystemConfig({ enabled: true, baseThreshold: 10, maxIntensity: 2 })
   const now = new Date()
   const state = { ...createAlterSystemState(now), alterValue: 12, alterWeight: 1 }
   const done = completeAlterAnalysis(state, '整体更严肃', 10, now, cfg)
-  assert.equal(done.alterValue, 0)
+  assert.equal(done.alterValue, 0, '快照 = 全部（12），消费完归零')
   assert.equal(done.emotionalOffset.direction, 'serious')
   assert.equal(done.emotionalOffset.intensity, 1.2)
+})
+
+check('completeAlterAnalysis：只消费快照，不吞分析期间新累积的分数（rc50）', () => {
+  const cfg = resolveAlterSystemConfig({ enabled: true, baseThreshold: 10, maxIntensity: 2 })
+  const now = new Date()
+  // 分析依据的是 12；分析期间又累积到 17。
+  const state = { ...createAlterSystemState(now), alterValue: 17, alterWeight: 1 }
+  const done = completeAlterAnalysis(state, '整体更严肃', 10, now, cfg, 12)
+  assert.equal(done.alterValue, 5, '只扣掉被消费的 12，剩下的 5 留在账上')
+  assert.equal(done.emotionalOffset.direction, 'serious')
+})
+
+check('completeAlterAnalysis：快照过期（已反向或跌回阈值下）→ 丢弃结果、一分不消费（rc50）', () => {
+  const cfg = resolveAlterSystemConfig({ enabled: true, baseThreshold: 10 })
+  const now = new Date()
+  // 分析依据 +12，但当前累计已反向到 -3。
+  const reversed = { ...createAlterSystemState(now), alterValue: -3, alterWeight: 1 }
+  const kept = completeAlterAnalysis(reversed, '更严肃', 10, now, cfg, 12)
+  assert.equal(kept, reversed, '原样返回同一个对象（未消费）')
+  assert.equal(kept.alterValue, -3, '反向的累计不能被吞掉')
+  // 跌回阈值之下同样丢弃。
+  const below = { ...createAlterSystemState(now), alterValue: 4, alterWeight: 1 }
+  assert.equal(completeAlterAnalysis(below, '更严肃', 10, now, cfg, 12), below)
+  assert.equal(below.alterValue, 4)
+})
+
+check('completeAlterAnalysis：零值不凭空造底色（旧实现会把 0 判成 relaxed）', () => {
+  const cfg = resolveAlterSystemConfig({ enabled: true, baseThreshold: 10 })
+  const now = new Date()
+  const empty = { ...createAlterSystemState(now), alterValue: 0, alterWeight: 1 }
+  const out = completeAlterAnalysis(empty, 'x', 10, now, cfg)
+  assert.equal(out, empty, '没有可分析的净变化就不该生成底色')
+  assert.equal(out.emotionalOffset, null)
+})
+
+check('alterAnalysisApplied：据此判断该不该记冷却（未消费 → 不锁）', () => {
+  const cfg = resolveAlterSystemConfig({ enabled: true, baseThreshold: 10 })
+  const now = new Date()
+  const ok = { ...createAlterSystemState(now), alterValue: 12, alterWeight: 1 }
+  assert.equal(alterAnalysisApplied(ok, completeAlterAnalysis(ok, 'x', 10, now, cfg)), true)
+  const stale = { ...createAlterSystemState(now), alterValue: 4, alterWeight: 1 }
+  assert.equal(alterAnalysisApplied(stale, completeAlterAnalysis(stale, 'x', 10, now, cfg, 12)), false)
 })
 
 check('emotionalOffsetForPrompt：禁用或权重不足时不注入', () => {
@@ -174,17 +216,19 @@ check('proactiveCandidateFingerprint 与 promise 绕过间隔', () => {
 
 /* ---------------------------------------------------------------- preplan */
 
-check('materializeSchedulePreplan：周规律展开为逐日', () => {
+check('materializeSchedulePreplan：周规律展开为逐日（含昨日，供跨夜段使用）', () => {
   const regimes = [{
     id: 'week', label: '上课', from: '2026-09-01', weekly: {
       monday: [{ id: 'm1', start: '09:00', end: '12:00', label: '上课', kind: 'fixed' }],
     },
   }]
   const days = materializeSchedulePreplan(regimes, [], '2026-09-07', 7)
-  assert.equal(days.length, 7)
+  // rc50：从昨天（offset=-1）开始物化——昨日跨夜安排在今日凌晨仍进行中。
+  assert.equal(days.length, 8)
+  assert.equal(days[0].date, '2026-09-06')
   // 2026-09-07 是周一
-  assert.equal(days[0].date, '2026-09-07')
-  assert.equal(days[0].blocks[0].label, '上课')
+  const today = days.find(day => day.date === '2026-09-07')
+  assert.equal(today.blocks[0].label, '上课')
 })
 
 check('materializeSchedulePreplan：日期例外 replace 覆盖', () => {
@@ -195,7 +239,22 @@ check('materializeSchedulePreplan：日期例外 replace 覆盖', () => {
   }]
   const exceptions = [{ date: '2026-09-07', mode: 'replace', reason: '放假', blocks: [{ id: 'x', start: '10:00', end: '11:00', label: '补觉', kind: 'flexible' }] }]
   const days = materializeSchedulePreplan(regimes, exceptions, '2026-09-07', 1)
-  assert.equal(days[0].blocks[0].label, '补觉')
+  const today = days.find(day => day.date === '2026-09-07')
+  assert.equal(today.blocks[0].label, '补觉')
+})
+
+check('materializeSchedulePreplan：昨晚开始的跨夜班次今天凌晨仍在日程里（rc50）', () => {
+  // 值夜班 23:00–次日 07:00：只物化今天的话，凌晨 2 点看日程会凭空变空。
+  const regimes = [{
+    id: 'night', label: '夜班', from: '2026-09-01', weekly: {
+      monday: [{ id: 'n1', start: '23:00', end: '07:00', label: '夜班', kind: 'fixed' }],
+    },
+  }]
+  // 2026-09-08（周二）凌晨 02:00 —— 昨晚（周一）的班次还在进行中。
+  const days = materializeSchedulePreplan(regimes, [], '2026-09-08', 1)
+  const yesterday = days.find(day => day.date === '2026-09-07')
+  assert.ok(yesterday, '昨日必须出现在物化结果里')
+  assert.equal(yesterday.blocks[0].label, '夜班')
 })
 
 check('schedulePreplanWindow：只投影未来 12 小时', () => {

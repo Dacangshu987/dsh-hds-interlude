@@ -366,9 +366,16 @@ function makeHost(options = {}) {
 
 /**
  * 等一个条件成立（后台扫描/定时器是异步的）。
+ *
+ * 默认窗口 4s 是单跑校准的：全量套件在机器高负载时（前面的用例留下了
+ * 未收敛的定时器与 IO），扫描回调可能被推迟到 6s 之后，导致时序性 flaky
+ * （同一用例单跑必过、全量偶发超时）。默认放宽到 12s——只影响「等到」
+ * 的耐心上限，条件早已成立时不会多等一毫秒；显式传更短窗口的用例
+ * （测「不投递」类负向断言）不受影响。
+ *
  * @param {() => boolean} predicate
  */
-async function waitFor(predicate, timeoutMs = 4000) {
+async function waitFor(predicate, timeoutMs = 12000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (predicate()) return true
@@ -450,7 +457,7 @@ await check('冷会话 + 磁盘上的到点提醒 → 自动唤醒并发到 IM�
   const sessionId = 'session-cold-e2e'
   const host = await bootWithPendingIntent({ sessionId, integration: { conversationKey: 'c2c:USER_E2E' } })
 
-  const delivered = await waitFor(() => host.sent.length > 0, 6000)
+  const delivered = await waitFor(() => host.sent.length > 0, 12000)
   assert.ok(delivered, '应该真的发出去一条消息，而不是什么都没发生')
   const texts = host.sent.map(item => item.text).join(' ')
   assert.ok(texts.includes('水'), `发出的内容应和待办相关，实际：${texts}`)
@@ -486,7 +493,7 @@ await check('休息时段不吞掉承诺型待办（线上 04:38 的「一分钟
     },
   })
 
-  const delivered = await waitFor(() => host.sent.length > 0, 6000)
+  const delivered = await waitFor(() => host.sent.length > 0, 12000)
   assert.ok(delivered, '角色当场答应的事不该被「你该睡了」吞掉')
   await host.ctx.stop?.()
 })
@@ -584,7 +591,7 @@ await check('模型把思考过程写成正文 → 一条都不发，且不重�
     intent: { id: 'i4', summary: '答应过对方：现在00:55，江柚等了一会儿没回音', reply: leaked, dueInMs: -1000 },
   })
 
-  const settled = await waitFor(() => loadState(sessionId).intents[0]?.status === 'delivered', 6000)
+  const settled = await waitFor(() => loadState(sessionId).intents[0]?.status === 'delivered', 12000)
   assert.ok(settled, '自言自语应当被判掉，而不是留在 pending 反复重试')
   assert.equal(host.sent.length, 0, `思考过程一个字都不该发出去，实际：${JSON.stringify(host.sent)}`)
   const after = loadState(sessionId)
@@ -607,7 +614,7 @@ await check('纯旁白正文 → 一条都不发（cleanImText 删光后不能�
     intent: { id: 'i5', summary: '答应过对方：晚点说', reply: narration, dueInMs: -1000 },
   })
 
-  const settled = await waitFor(() => loadState(sessionId).intents[0]?.status === 'delivered', 6000)
+  const settled = await waitFor(() => loadState(sessionId).intents[0]?.status === 'delivered', 12000)
   assert.ok(settled, '纯旁白应当被判掉并结算，而不是留在 pending')
   assert.equal(host.sent.length, 0, `旁白一个字都不该发出去，实际：${JSON.stringify(host.sent)}`)
   await host.ctx.stop?.()
@@ -622,7 +629,7 @@ await check('短句自我宣告「我决定不发了。」→ 一条都不发', 
     intent: { id: 'i6', summary: '答应过对方：晚点说', reply: '我决定不发了。', dueInMs: -1000 },
   })
 
-  const settled = await waitFor(() => loadState(sessionId).intents[0]?.status === 'delivered', 6000)
+  const settled = await waitFor(() => loadState(sessionId).intents[0]?.status === 'delivered', 12000)
   assert.ok(settled, '自我宣告应当被判掉并结算')
   assert.equal(host.sent.length, 0, `不该发出去，实际：${JSON.stringify(host.sent)}`)
   await host.ctx.stop?.()
@@ -735,7 +742,7 @@ await check('投递失败会保留待办而不是假装送达', async () => {  c
   if (fiber && typeof fiber.then === 'function') await fiber
   await sleep(30)
 
-  await waitFor(() => attempts > 0, 6000)
+  await waitFor(() => attempts > 0, 12000)
   const after = loadState(sessionId)
   const intent = after.intents.find(item => item.id === 'i1')
   assert.notEqual(intent.status, 'delivered', '没送到就不能标 delivered')
@@ -869,7 +876,7 @@ await check('插件唤起的回合里调了 interlude_say → 只投一次，不
     pluginConfig: { im: { enabled: true, appId: 'test-app', interactive: { enabled: true, requireInbound: false } } },
   })
 
-  const delivered = await waitFor(() => host.sent.length >= 3, 6000)
+  const delivered = await waitFor(() => host.sent.length >= 3, 12000)
   assert.ok(delivered, `三段话都该发出去，实际：${JSON.stringify(host.sent)}`)
   await sleep(400) // 给重复投递留出发生的时间窗
 
@@ -905,7 +912,7 @@ await check('外部插件（如 time-context）在到点提醒回合注入快照
     pluginConfig: { im: { enabled: true, appId: 'test-app', interactive: { enabled: true, requireInbound: false } } },
   })
 
-  const delivered = await waitFor(() => host.sent.length >= 3, 6000)
+  const delivered = await waitFor(() => host.sent.length >= 3, 12000)
   assert.ok(delivered, `三段话都该发出去，实际：${JSON.stringify(host.sent)}`)
   await sleep(400)
 
@@ -1000,6 +1007,14 @@ async function bootLiveAutoAdvance({
     im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 0 },
     ...pluginConfig,
   })
+  // 测试只关心「发了什么、发了几次」，不关心打字节奏。默认的打字模拟
+  // （1s 基础 + 字数/8cps + ±30% 抖动）会让三段话的总耗时在 3.7s–6.8s 间
+  // 随机波动，与 waitFor 的 6s 窗口形成边界竞争——这正是时序性 flaky 的根因
+  // （单跑偶发、全量高负载下更频发，与代码改动无关）。这里统一压成近即时投递。
+  config.im = {
+    ...config.im,
+    chunking: { typingBaseDelaySeconds: 0, typingCharactersPerSecond: 100, typingJitterRatio: 0, minIntervalMs: 10 },
+  }
   const fiber = host.ctx.plugin(plugin, config)
   if (fiber && typeof fiber.then === 'function') await fiber
   await sleep(30)
@@ -1013,7 +1028,7 @@ await check('续写里角色说了话（整行引语）→ 只有那句话被发
   const sessionId = 'session-live-aa'
   const host = await bootLiveAutoAdvance({ sessionId })
 
-  const receipt = await waitFor(() => loadState(sessionId).lastImDelivery, 6000)
+  const receipt = await waitFor(() => loadState(sessionId).lastImDelivery, 12000)
   assert.ok(receipt, '角色说了话就必须发出去，而不是只留在故事里')
   const texts = host.sent.map(item => item.text)
   assert.ok(texts.some(t => t.includes('在忙吗')), `发出的应是那句台词，实际：${JSON.stringify(texts)}`)
@@ -1061,7 +1076,7 @@ await check('自动推进续写中遭遇 time-context 快照 + 调了 interlude_
     },
   })
 
-  const delivered = await waitFor(() => host.sent.length >= 3, 6000)
+  const delivered = await waitFor(() => host.sent.length >= 3, 12000)
   assert.ok(delivered, `三段话都该发出去，实际：${JSON.stringify(host.sent)}`)
   await sleep(400)
 
@@ -1143,7 +1158,7 @@ await check('发消息间隔没到 → 台词攒着不发（间隔是「发消�
     pluginConfig: { im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 120 } },
   })
 
-  await waitFor(() => host.agent.followups.length > 0, 6000)
+  await waitFor(() => host.agent.followups.length > 0, 12000)
   await sleep(400)
   const after = loadState(sessionId)
   assert.equal(host.sent.length, 0, `间隔内不该发消息，实际：${JSON.stringify(host.sent)}`)
@@ -1171,7 +1186,7 @@ await check('写故事间隔到了、发消息间隔也到了 → 才真的发�
     pluginConfig: { im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 120 } },
   })
 
-  const delivered = await waitFor(() => host.sent.length > 0, 6000)
+  const delivered = await waitFor(() => host.sent.length > 0, 12000)
   assert.ok(delivered, '间隔走完之后该发的还是要发')
   assert.equal(loadState(sessionId).lastAdvanceDelivery?.mode, 'speak')
   await host.ctx.stop?.()
@@ -1180,7 +1195,7 @@ await check('写故事间隔到了、发消息间隔也到了 → 才真的发�
 await check('投递状态落盘：lastImDelivery 记下这次真的送到了（可自检）', async () => {
   const sessionId = 'session-live-aa-state'
   const host = await bootLiveAutoAdvance({ sessionId })
-  await waitFor(() => loadState(sessionId).lastImDelivery, 6000)
+  await waitFor(() => loadState(sessionId).lastImDelivery, 12000)
 
   const after = loadState(sessionId)
   assert.ok(after.lastImDelivery, '应留下投递回执')
@@ -1255,7 +1270,7 @@ await check('配额用光后，角色答应过的提醒仍然发得出去（承�
     },
   })
 
-  const delivered = await waitFor(() => host.sent.length > 0, 6000)
+  const delivered = await waitFor(() => host.sent.length > 0, 12000)
   assert.ok(delivered, '承诺型待办不该被配额挡住')
   assert.ok(host.sent.map(m => m.text).join(' ').includes('药'), JSON.stringify(host.sent.map(m => m.text)))
   await host.ctx.stop?.()
@@ -1286,7 +1301,7 @@ await check('退避已过期：到点待办照常开口（闸不会永久粘住�
     integration: { conversationKey: 'c2c:USER_BACKOFF2' },
     statePatch: { proactiveBackoffUntil: Date.now() - 60_000, proactiveBackoffReason: 'no-writeback' },
   })
-  const delivered = await waitFor(() => host.sent.length > 0, 6000)
+  const delivered = await waitFor(() => host.sent.length > 0, 12000)
   assert.ok(delivered, '退避过期后应照常开口')
   await host.ctx.stop?.()
 })

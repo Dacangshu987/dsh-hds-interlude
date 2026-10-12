@@ -77,9 +77,10 @@ check('重物化结果仍覆盖不到今天（无匹配 regime）→ 沿用原�
   assert.deepEqual(window.blocks, [])
 })
 
-check('重物化函数本身：锚定今天能产出今天与明天', () => {
+check('重物化函数本身：锚定今天能产出昨天、今天与明天', () => {
   const days = materializeSchedulePreplan([regime('2026-09-01')], [], '2026-09-11', 2)
-  assert.deepEqual(days.map((d) => d.date), ['2026-09-11', '2026-09-12'])
+  // rc50：含昨日（offset=-1），供跨夜安排在今天凌晨仍有剩余区间。
+  assert.deepEqual(days.map((d) => d.date), ['2026-09-10', '2026-09-11', '2026-09-12'])
 })
 
 console.log(`\nSchedule Preplan 物化滞后：通过 ${passed} 项，失败 ${failed} 项`)

@@ -18,7 +18,10 @@
 | `1.0.1-rc20` ~ `rc22` | 09-24 | ◐ 部分（rc21/rc23 审计项已补，见第 2026-10 批次） |
 | `1.0.1-rc23` | 09-26 | ✅ **档位化 + 播种器 M1/M2 + 审计退避已移植** |
 | `1.0.1-rc24` | 09-27 | ❌ 未移植（配置形态，多为 N/A） |
-| `1.0.1-rc25` ~ `rc36` | 10-02 → 10-04 | ◐ **五项高优先级已移植**（rc28 DeepSeek 家族行、rc28 播种器复读架构、rc25 联系温度、rc33 投递幂等、rc35 历史预算旋钮），见第十四章；其余多为 N/A 或后续评估 |
+| `1.0.1-rc25` ~ `rc36` | 10-02 → 10-04 | ✅ **五项高优先级已移植**（rc28 DeepSeek 家族行、rc28 播种器复读架构、rc25 联系温度、rc33 投递幂等、rc35 历史预算旋钮），见第十四章 |
+| `1.0.1-rc37` ~ `rc47` | 10-05 → 10-10 | ❌ 无独立 changelog 条目（内部迭代，随 rc48/rc50 一并发布） |
+| `1.0.1-rc48` | 10-08 | N/A（分享码同步专属） |
+| `1.0.1-rc50` | 10-11 | ◐ **六项已移植**（preplan 跨夜+保留策略、alter 快照消费、全局事实主体、索引二分、DeepSeek 行收窄），见第十五章 |
 
 ---
 
@@ -684,3 +687,145 @@ close-people/paths/chance），按 `(storyId, 时间槽)` 确定性轮换，相�
   + `specialization`、`world-seeder`、`client-panel-coverage` 扩展。
 - 全量 `npm test` exit=0；`test:loadbearing` exit=0（其中 4 个 FAIL 是**刻意的反例
   验证**——拆掉机制后用例必须变红，基线与移植后行为一致）。
+
+---
+
+## 十五、2026-10 第二批：rc48 / rc50 移植
+
+> 参照物：上游 `1.0.1-rc50`（2026-10-11，tag `1.0.1-rc50` @ `bb3be3a`；本地临时 tag
+> `_tmp_upstream_rc50`）。区间 rc37–rc49 被压进同一提交（无独立 changelog 条目），
+> 逐项语义从 rc50 的 `docs/CHANGELOG.md`、`development/FULL_CODE_REVIEW_FIXES_2026-10-11_RC48.md`
+> 与 `src/` diff 核对。区间规模：115 文件 / +13109 / −1762（src 27 文件 +3234/−762）。
+
+### （一）rc50：跨夜日程午夜后消失 + 今天的计划被未来阶段挤掉
+
+Schedule Preplan 的两个保留缺陷（`src/schedule-preplan.ts`）：
+
+1. **跨夜安排午夜后消失**：`materializeSchedulePreplan` 从 `offset = 0`（只物化今天）
+   开始，值夜班（23:00–次日 07:00）/通宵出行在今天凌晨**从日程里凭空消失**；
+   `schedulePreplanWindow` 又只接受 `dayOffset 0..1`，昨日段的剩余区间同样进不来。
+2. **今天的计划被未来阶段挤掉**：`regimes.slice(-6)` 按**数组末位**截断——模型新排
+   一条未来阶段，就把今天的阶段挤出保留集；exceptions 的 `slice(-30)` 同理。
+3. 附带：空提议判定 `!regimes.length` 会把「只有一次性安排」误判成空提案整批丢弃
+   （一次性安排住在 exceptions 里）。
+
+| 上游 | 本仓落点（`lib/preplan.js`） |
+|---|---|
+| `materializeSchedulePreplan` 从 `-1` 起物化 | 同（昨日跨夜段进入物化结果） |
+| `schedulePreplanWindow` 放宽到 `dayOffset >= -1` | 同（早已结束的昨日块由块级 start/end 比较自然过滤） |
+| `retainSchedulePreplanRegimes`（逐日找生效阶段 + 未来阶段 6 个名额） | 同（新增私有函数）；取代 `regimes.slice(-6)` |
+| `retainSchedulePreplanExceptions`（窗口内全留 + 窗口外 6 个） | 同；取代 `slice(-30)` |
+| 空提议判定加 `&& !exceptions.length` | 同 |
+
+**测试**：新增 `test/preplan-retention.test.mjs`（8 项）——跨夜段进入凌晨窗口、
+昨日已结束的普通块不渗入、新加未来阶段不挤掉今天、未来阶段上限、过期阶段被裁、
+今天的例外不被挤掉、只有一次性安排不算空提议、真·空提议落结论。
+既有 `logic.test.mjs` 与 `preplan-materialization-lag.test.mjs` 的物化天断言同步
+（现含昨日，`days[0]` → 按 `date` 查找）。
+
+### （二）rc50：Alter 分析消费语义（不再吞掉分析期间的新分数）
+
+上游缺陷：分析要**异步**跑一趟侧端模型，触发时记下快照；分析期间用户还在说话、
+累计还在涨——旧实现回来时无条件 `alterValue = 0`，**把分析没看过的新分数一起吞了**；
+且一次过期结果仍会占满 5 分钟冷却期，期间新分数攒够也审不了。
+
+上游修订：`completeAlterAnalysis` 加 `analyzedValue` 入参，只扣掉被消费的那份
+（`clamp(alterValue - triggerValue)`）；应用前复核快照（反向或跌回阈值下 → 整份丢弃、
+一分不消费）；新增 `clearAlterScopeAnalysisAttempt` 让未消费的 scope 可再次被审。
+
+**本仓形态差异（如实记录）**：本仓的底色是**同步**产生的（`interlude_alter` 的
+`note` 直接就是底色描述，没有侧端模型往返），所以「分析期间新累积分数」在结构上
+不可能发生。仍按上游形态实现，理由是：① 只消费快照不整片清零是更精确的契约
+（同步路径下两者结果相同），将来若接入异步分析不必再改；② 过期复核 +「没消费
+就不占冷却」把边界写进函数而非靠调用方自觉。
+
+| 上游 | 本仓落点（`lib/alter.js` + `lib/index.js`） |
+|---|---|
+| `completeAlterAnalysis(..., analyzedValue?)` | 同（第 6 个可选参数；缺省 = 消费当前全部） |
+| 只消费快照 `clamp(alterValue - triggerValue)` | 同 |
+| 快照过期 → 原样返回、不消费 | 同（**返回同一对象引用**，作为「未生效」的信号） |
+| 零值不造底色 | 同（旧实现会把 `0` 判成 `relaxed`，凭空生成一个方向为 0 的底色） |
+| `clearAlterScopeAnalysisAttempt`（未消费则不锁） | 本仓等价物：`alterAnalysisApplied(before, after)` 引用比较；`index.js` 只在真的消费了才写 `lastAnalysisAttemptAt`，否则回复「未消费任何分数」 |
+
+**N/A（本仓无对应结构）**：上游同批修的 `normalizePendingScopes` 容量饥饿
+（固定 `slice(0, 32)` 让先到的零值 scope 永久占位，挤压新建参与者/独立生活 scope）
+——本仓 Alter 是**单 scope**（state 顶层 `alterValue`，无 `pendingScopes`、无
+`participantId` 维度），不存在多 scope 淘汰，故不适用。
+
+**测试**：`test/logic.test.mjs` 扩展（+4 项）：生成底色并消费累计、只消费快照不吞新分、
+快照过期整份丢弃、零值不造底色、`alterAnalysisApplied` 判据。
+
+### （三）rc50：全局事实主体澄清
+
+上游口径：长期事实是**全局叙事材料**，可能出现在任何对话上下文里；靠
+`participantId` 标"这条关于谁"是存储层思路，投影进提示词只会诱导模型把人物身份
+理解成隐藏字段，而正文里依旧写着「他说他准备出门」，换个人读就指代不明。
+修订：契约要求事实**自带主语**（「小林说他准备出门」合格，「他说他准备出门」不合格），
+`factEvidenceForPrompt` 不再投影 `participantId`，是否显露由叙事模型决定。
+
+本仓事实本就是全局的（`rankFacts` 不按 `participantId` 过滤、`renderFacts` 全量渲染），
+所以落点是**措辞与字段**，不是隔离逻辑。
+
+| 上游 | 本仓落点 |
+|---|---|
+| `factEvidenceForPrompt` 去掉 `participantId` | `lib/knowledge-evidence.js` 同 |
+| 「Facts are global narrative evidence…name that person explicitly」 | `KNOWLEDGE_WRITING_FRAME` 追加中文契约（含合格示例与不合格反例） |
+| 事实 JSON 契约 `content` 改为 "self-contained fact with any related person named explicitly" | `interlude_memory` 工具 `content` 参数描述同步改写 |
+
+**测试**：新增 `test/rc50-batch.test.mjs` 中「全局事实主体」3 项。
+
+### （四）rc50：情节索引检查点查找优化
+
+`buildEpisodeIndex` 原为每行对检查点做一次线性 `find`（O(条目数 × 检查点数)）。
+上游改为：检查点**互不重叠**时按 `firstEntryId` 排序后**二分**（O(log n)）；
+一旦重叠就**退回**原 first-match 线性扫描——重叠意味着语义本身有歧义，二分只认
+「最后一个 `firstEntryId <= id`」会改变选中结果，正确性优先于速度。
+
+本仓 `lib/episode-index.js` 抽出 `makeCheckpointLookup(checkpoints)` 实现同语义，
+`buildEpisodeIndex` 主体不变。
+
+**测试**：`test/rc50-batch.test.mjs` 4 项（不相交分组、区间外单点锚、**重叠时保留
+first-match**、无检查点按 frameId、空/损坏输入）。
+
+### （五）rc50：DeepSeek 家族行收窄
+
+上游把 `EXTRA_DEEPSEEK` 的适用范围收窄为「可承载回复的回合」（user-message /
+conversation-follow-up / intent-due），并明确自主生活推进回合**本来就不带传输**
+——除非这一轮真的发了消息。理由：原措辞会让模型在「没话可说」的推进回合里硬凑
+一句，与「安静的出口」相冲突。
+
+本仓 `lib/specialization.js` 的 deepseek 家族行同步收窄（「本轮若确实要对她说话」
+才必需；自主推进回合豁免），原有语义点（每回合独立 / 不是模板 / 安静是选择）全部保留。
+
+**测试**：`test/rc50-batch.test.mjs` 1 项 + 既有 `specialization.test.mjs`（9 项）全绿。
+
+### rc50 其余项分类（N/A / 暂缓）
+
+| 上游项 | 结论 | 理由 |
+|---|---|---|
+| 端点在线状态（Satori `Status.ONLINE` 枚举） | N/A | 本仓自建 QQ 通道，无 Satori/Koishi 端点注册表 |
+| 已提交 pending 消息补偿（`metadata.deliveryActions` 恢复） | N/A | 上游是 SQLite 剧本行 + 桌面 worker 的补偿扫描；本仓投递重试走 `pendingText`/`pendingRemaining` + 投递幂等窗口（见第十四章四） |
+| 分段气泡与补写互斥（`split-message` pending 检查） | N/A | 上游分段链持久化于剧本元数据；本仓分条是一次调用内的同步循环，无跨轮 pending 分段链 |
+| 僵尸承诺退役（`expiresAt`、五次顺延上限） | ◐ 已等价 | 本仓 `lib/intent-lifecycle.js` 的到期顺延与上限逻辑已覆盖；语义细节见该模块注释 |
+| 统一发送与成功确认入口 | N/A | 上游是多条投递路径（私聊/群/分段/补偿/实验早发）收敛；本仓出站只有 `deliverToIm` → `qqIm.sendToTarget` 一条 |
+| 已接受结果与持久化失败分离 / purge 世代 | N/A | 同上（上游账本写在剧本行内，本仓写 state JSON） |
+| 后台整理读取本剧本原文 | N/A | 本仓无后台压缩整理管道（DSH 宿主自己管 compaction） |
+| 关系证据跨检查点衔接 / 整理合约日志对齐 / 整理提交完整性（SQLite 事务） | N/A | 同上；事务与回滚是 SQLite 专属 |
+| 兼容端点 DeepSeek `thinking` 开关 | N/A | 本仓不组装模型请求（宿主管 provider 与路由） |
+| 模型分配与维护路由 / 流式 SSE / 代理（`http-proxy.ts`） | N/A | 同上 |
+| 历史图片回源失败日志分层 / 群聊历史图片回流 | N/A | 本仓无素材库与历史图片回流管道 |
+| 入站去重（落库后登记 + 记 bot selfId） | ◐ 已等价 | 本仓 `lib/qq-im/inbound.js` 的 `DedupeWindow` 已按 messageId 去重（rc23 审计时对齐）；selfId 维度的跨账号冲突在本仓单 bot 绑定模型下不出现 |
+| 任务与并发容器修复（作品任务/wake busy/browser 槽） | N/A | 上游 scheduler/works/browser 专属 |
+| 恢复与历史导航（分页扫描、二分 checkpoint） | ◐ 部分 | 索引侧二分已移植（见（四））；恢复扫描是 SQLite 分页专属 |
+| 群上下文与冷却（先筛目标群再截窗口） | N/A | 本仓会话状态按 key 隔离，群/私聊不共享条目表 |
+| rc48 分享码同步（`share-sync.ts`，410 行） | N/A | 本仓无分享码/预设同步功能，也无清库重建流程 |
+| rc31/rc32 Narrative Attractor（含 rc50 的 `long-arc.ts` 增量） | ❌ 暂缓 | 全新子系统，依赖侧端模型通道与持久化状态表；与前批结论一致 |
+
+### 本批次验证
+
+- 新增测试：`preplan-retention`（8）/ `rc50-batch`（9）+ `logic`（+4）。
+- **补链**：发现 `package.json` 的 `test` / `test:full` 是**显式枚举文件**的，本轮与
+  上轮新增的 5 个测试文件（`contact-mode` / `delivery-idempotency` / `context-budget` /
+  `preplan-retention` / `rc50-batch`）此前**都不在链上**——`npm test` 通过并不代表
+  它们被跑过。已全部补入两条链（这是验证基线的真实缺口，记此备忘）。
+- 全量 `npm test` exit=0；`test:loadbearing` exit=0。
