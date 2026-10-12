@@ -28,8 +28,10 @@ function eq(actual, expected, label) {
 
 /* ------------------------------------------------------------ 分条 */
 
-check('按句末标点切条', () => {
-  eq(splitOutboundText('在吗？今天好累啊。'), ['在吗？', '今天好累啊。'], '应当按句号问号切开')
+check('分隔符是气泡边界（默认不按句号自动分条）', () => {
+  // 上游 rc36 协议：只有分隔符才是边界；没有分隔符时整段一条。
+  eq(splitOutboundText('在吗？<sep/>今天好累啊。'), ['在吗？', '今天好累啊。'], '应当按分隔符切开')
+  eq(splitOutboundText('在吗？今天好累啊。'), ['在吗？今天好累啊。'], '无分隔符时不该自动分条')
 })
 
 check('长句按软标点在字数内断开', () => {
@@ -40,7 +42,7 @@ check('长句按软标点在字数内断开', () => {
 })
 
 check('条数上限：不丢内容，多余的字并进前面的条', () => {
-  const out = splitOutboundText('一。二。三。四。五。六。', { maxChars: 50, maxMessages: 2 })
+  const out = splitOutboundText('一。<sep/>二。<sep/>三。<sep/>四。<sep/>五。<sep/>六。', { maxChars: 50, maxMessages: 2 })
   eq(out.length, 2, '应当压到 2 条')
   // 关键：内容不能丢。
   const joined = out.join('')

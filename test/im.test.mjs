@@ -82,14 +82,43 @@ test('cleanImText：正常内容原样保留', () => {
 
 /* --------------------------------------------------------------- 分条 */
 
-test('splitImText：短句各自成条', () => {
-  const text = '在吗\n我摸鱼呢\n楼下那家面馆涨价了'
+test('splitImText：分隔符是气泡边界（换行默认不切）', () => {
+  // 上游 rc36 协议：只有 messageSeparator 才是边界。
+  const text = '在吗<sep/>我摸鱼呢<sep/>楼下那家面馆涨价了'
   assert.deepEqual(splitImText(text), ['在吗', '我摸鱼呢', '楼下那家面馆涨价了'])
+  // 没有分隔符时，换行**不**构成边界（整段一条）。
+  assert.deepEqual(splitImText('在吗\n我摸鱼呢'), ['在吗\n我摸鱼呢'])
 })
 
-test('splitImText：长行按句号切', () => {
+test('splitImText：开了 convertNewlineToSeparator 后换行也算边界', () => {
+  assert.deepEqual(
+    splitImText('在吗\n我摸鱼呢', { convertNewlineToSeparator: true }),
+    ['在吗', '我摸鱼呢'],
+  )
+  // 已有显式分隔符时换行不参与（避免两套边界混用切碎一句话）。
+  assert.deepEqual(
+    splitImText('甲<sep/>乙\n丙', { convertNewlineToSeparator: true }),
+    ['甲', '乙\n丙'],
+  )
+})
+
+test('splitImText：整段过长时按句号切（尊重句读，不在句中硬断）', () => {
   const text = '今天真的累死了。周报改了六遍。王姐还说我不够细。'
-  assert.deepEqual(splitImText(text), ['今天真的累死了。', '周报改了六遍。', '王姐还说我不够细。'])
+  // 上限够宽 → 不按句号自动分条，整段一条。
+  assert.deepEqual(splitImText(text, { maxChars: 200 }), [text])
+  // 超上限才切；切完每条都不超上限，且内容不丢。
+  const out = splitImText(text, { maxChars: 8 })
+  assert.ok(out.length > 1, '超长应被拆开')
+  for (const message of out) assert.ok(message.length <= 8, `「${message}」超长`)
+  assert.equal(out.join(''), text, '内容不该丢字')
+  // 前两句完整保留（优先在句末断开）。
+  assert.equal(out[0], '今天真的累死了。')
+  assert.equal(out[1], '周报改了六遍。')
+})
+
+test('splitImText：splitReplyMessages=false 时整段一条', () => {
+  assert.deepEqual(splitImText('甲<sep/>乙', { splitReplyMessages: false }), ['甲<sep/>乙'])
+  assert.deepEqual(splitImText('甲<sep/>乙', { enabled: false }), ['甲<sep/>乙'], '旧名等价')
 })
 
 test('splitImText：旁白不进结果', () => {
@@ -115,7 +144,7 @@ test('splitImText：maxChars 内优先在逗号处断', () => {
 })
 
 test('splitImText：超出 maxMessages 时合并而不是丢弃', () => {
-  const text = '一\n二\n三\n四\n五\n六'
+  const text = '一<sep/>二<sep/>三<sep/>四<sep/>五<sep/>六'
   const out = splitImText(text, { maxMessages: 3 })
   assert.equal(out.length, 3)
   const joined = out.join('')
@@ -125,7 +154,7 @@ test('splitImText：超出 maxMessages 时合并而不是丢弃', () => {
 })
 
 test('splitImText：默认 maxMessages=4 上限生效', () => {
-  const out = splitImText('一\n二\n三\n四\n五\n六\n七\n八')
+  const out = splitImText('一<sep/>二<sep/>三<sep/>四<sep/>五<sep/>六<sep/>七<sep/>八')
   assert.ok(out.length <= 4, `实际 ${out.length} 条`)
 })
 
@@ -152,7 +181,34 @@ test('splitImText：emoji 不会被切坏（不产生孤立代理项）', () => 
 /* ----------------------------------------------------------- 配置解析 */
 
 test('resolveImChunking：缺省值', () => {
-  assert.deepEqual(resolveImChunking({}), { maxChars: 40, maxMessages: 4, minIntervalMs: 400 })
+  assert.deepEqual(resolveImChunking({}), {
+    // 上游 rc36 的分条协议三项。
+    splitReplyMessages: true,
+    messageSeparator: '<sep/>',
+    convertNewlineToSeparator: false,
+    maxChars: 40,
+    maxMessages: 4,
+    minIntervalMs: 400,
+  })
+})
+
+test('resolveImChunking：分条协议字段可覆盖，旧名 enabled 作回退', () => {
+  const custom = resolveImChunking({
+    chunking: { splitReplyMessages: false, messageSeparator: '||', convertNewlineToSeparator: true },
+  })
+  assert.equal(custom.splitReplyMessages, false)
+  assert.equal(custom.messageSeparator, '||')
+  assert.equal(custom.convertNewlineToSeparator, true)
+  // 旧名回退：只给 enabled 时也认。
+  assert.equal(resolveImChunking({ chunking: { enabled: false } }).splitReplyMessages, false)
+  assert.equal(resolveImChunking({ chunking: { enabled: true } }).splitReplyMessages, true)
+  // 上游名优先于旧名。
+  assert.equal(
+    resolveImChunking({ chunking: { splitReplyMessages: true, enabled: false } }).splitReplyMessages,
+    true,
+  )
+  // 空分隔符回默认（不能让空串把整段切碎）。
+  assert.equal(resolveImChunking({ chunking: { messageSeparator: '' } }).messageSeparator, '<sep/>')
 })
 
 test('resolveImChunking：越界被夹紧', () => {
@@ -255,7 +311,9 @@ await testAsync('deliverImChunks：条间间隔真的生效', async () => {
 
 /* ------------------------------------------------------------ 端到端 */
 
-test('端到端：模型典型输出 → 可直接发送的短消息', () => {
+test('端到端：模型典型输出（仍用换行分条）→ 可直接发送的短消息', () => {
+  // 这正是上游 rc36 `convertNewlineToSeparator` 要覆盖的情形：
+  // 模型没按分隔符协议输出、而是用换行分条。
   const modelOutput = [
     '（把耳机摘了，靠在地铁门边上）',
     '"在吗"',
@@ -267,7 +325,7 @@ test('端到端：模型典型输出 → 可直接发送的短消息', () => {
     '"就离谱"',
   ].join('\n')
 
-  const out = splitImText(modelOutput)
+  const out = splitImText(modelOutput, { convertNewlineToSeparator: true })
   assert.deepEqual(out, [
     '在吗',
     '我摸鱼跟你说句话 别揭发我',
@@ -277,6 +335,15 @@ test('端到端：模型典型输出 → 可直接发送的短消息', () => {
   for (const message of out) {
     assert.ok(!message.includes('（'), `漏出旁白：${message}`)
     assert.ok(!message.includes('"'), `漏出引号：${message}`)
+  }
+})
+
+test('端到端：模型按分隔符协议输出（默认路径）', () => {
+  const modelOutput = '（把耳机摘了）\n"在吗"<sep/>"我摸鱼跟你说句话"<sep/>"就离谱"'
+  const out = splitImText(modelOutput)
+  assert.deepEqual(out, ['在吗', '我摸鱼跟你说句话', '就离谱'])
+  for (const message of out) {
+    assert.ok(!message.includes('<sep/>'), `分隔符不该留在消息里：${message}`)
   }
 })
 
