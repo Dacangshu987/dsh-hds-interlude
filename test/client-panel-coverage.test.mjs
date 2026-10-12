@@ -194,6 +194,11 @@ const eq = (a, b, label) => assert.deepEqual(a, b, `${label}\n  实际: ${JSON.s
 const state = {
   config: {
     timeZone: 'Asia/Shanghai',
+    // 可配置提示词（对齐上游 rc50 四层结构）：非空值，用来验证面板确实读对了路径。
+    mainPrompt: '主体叙事自定义',
+    formatPrompt: '格式附加自定义',
+    fixedPrompt: '固定指令自定义',
+    stylePrompt: '文风自定义',
     im: {
       enabled: true,
       group: {
@@ -319,6 +324,14 @@ check('扩展页有模型特化（rc14）：档位与模型名读回', () => {
   eq(controlNearLabel(advanced, '模型名（用于自动推断）').props.value, 'gemini-3-flash', '模型名')
 })
 
+check('扩展页有提示词四层（对齐上游 rc50）：四个字段读回配置值', () => {
+  // 上游把提示词做成 Schema 字段并明确权限分层；本仓面板按同一结构暴露。
+  eq(controlNearLabel(advanced, '主体叙事提示词（mainPrompt）').props.value, '主体叙事自定义', 'mainPrompt')
+  eq(controlNearLabel(advanced, '输出格式附加说明（formatPrompt）').props.value, '格式附加自定义', 'formatPrompt')
+  eq(controlNearLabel(advanced, '附加固定指令（fixedPrompt）').props.value, '固定指令自定义', 'fixedPrompt')
+  eq(controlNearLabel(advanced, '文风（stylePrompt）').props.value, '文风自定义', 'stylePrompt')
+})
+
 check('扩展页有维护段（记忆窗口 / 休息时段 / 日志）并读回配置值', () => {
   eq(controlNearLabel(advanced, '历史上下文条数闸').props.value, 35, '条数闸')
   eq(controlNearLabel(advanced, '历史上下文时间窗').props.value, 45, '时间窗')
@@ -349,6 +362,9 @@ current = await setValue(controlNearLabel(current, '模型名（用于自动推�
 current = await setValue(controlNearLabel(goTab('聊天'), '每轮最多几次'), '3')
 // 扩展页：改休息时段（两行 → 解析成两个窗口）
 current = await setValue(controlNearLabel(goTab('扩展'), '休息时段'), '23:00-07:00\n13:00-14:00')
+// 扩展页：改提示词四层（对齐上游 rc50）
+current = await setValue(controlNearLabel(goTab('扩展'), '主体叙事提示词（mainPrompt）'), '新的主体叙事')
+current = await setValue(controlNearLabel(current, '文风（stylePrompt）'), '新的文风')
 
 const saveBtn = buttonByText(current ?? view.get(), '保存')
 check('找到保存按钮', () => { assert.ok(saveBtn, '没有保存按钮') })
@@ -378,6 +394,11 @@ if (saveCall) {
   })
   check('维护段的改动也落对路径（含休息时段解析成两个窗口）', () => {
     eq(value.logLevel, 'warn', 'logLevel')
+    // 提示词四层：改过的落新值，没改的保持原值（面板不能漏写）。
+    eq(value.mainPrompt, '新的主体叙事', 'mainPrompt')
+    eq(value.stylePrompt, '新的文风', 'stylePrompt')
+    eq(value.formatPrompt, '格式附加自定义', 'formatPrompt 未被漏写')
+    eq(value.fixedPrompt, '固定指令自定义', 'fixedPrompt 未被漏写')
     eq(value.runtime?.contextEntryLimit, 35, 'runtime.contextEntryLimit')
     eq(value.runtime?.memoryLimit, 12, 'runtime.memoryLimit')
     eq(value.runtime?.repetitionGuard, false, 'runtime.repetitionGuard')
