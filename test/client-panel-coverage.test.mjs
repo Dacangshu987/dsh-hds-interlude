@@ -206,6 +206,10 @@ const state = {
         willingnessAuto: { busy: 'reserved', idle: 'eager', asleep: 'quiet' },
       },
       chunking: {
+        // 气泡边界协议（对齐上游 rc36）：刻意用非默认值。
+        splitReplyMessages: false,
+        messageSeparator: '||',
+        convertNewlineToSeparator: true,
         typingBaseDelaySeconds: 2,
         typingCharactersPerSecond: 12,
         typingMaxDelaySeconds: 8,
@@ -275,6 +279,13 @@ check('聊天页有打字节奏四项，且读回配置里的值（rc21）', () 
   eq(controlNearLabel(chat, '打字速度').props.value, 12, '字/秒')
   eq(controlNearLabel(chat, '单条最长等待').props.value, 8, '最长等待')
   eq(controlNearLabel(chat, '等待的随机浮动').props.value, 0.1, '抖动')
+})
+
+check('聊天页有气泡边界协议三项，且读回配置里的值（rc36）', () => {
+  // 分条开关：夹具里是 false（关闭），所以复选框应为未勾选。
+  eq(checkboxNear(chat, '允许分条发送').props.checked, false, 'splitReplyMessages=false')
+  eq(controlNearLabel(chat, '气泡分隔符').props.value, '||', '自定义分隔符')
+  eq(checkboxNear(chat, '换行也当分条边界').props.checked, true, 'convertNewlineToSeparator=true')
 })
 
 /* ─────────────────── B. 聊天页：转发预算 / 跨群 / 意愿档位 ─────────────────── */
@@ -388,6 +399,10 @@ if (saveCall) {
     eq(value.im?.forwardLimits?.maxDepth, 1, 'im.forwardLimits.maxDepth')
     eq(value.im?.group?.willingnessPreset, 'auto', 'im.group.willingnessPreset')
     eq(value.im?.group?.willingnessAuto?.idle, 'eager', 'willingnessAuto.idle')
+    // 气泡边界协议三项没改过，必须原样保留（面板漏写会把它们悄悄重置成默认值）。
+    eq(value.im?.chunking?.splitReplyMessages, false, 'splitReplyMessages 未被漏写')
+    eq(value.im?.chunking?.messageSeparator, '||', 'messageSeparator 未被漏写')
+    eq(value.im?.chunking?.convertNewlineToSeparator, true, 'convertNewlineToSeparator 未被漏写')
     eq(value.worldSeeder?.blockedNames, ['小鹿'], 'worldSeeder.blockedNames')
     eq(value.specialization?.mode, 'lite', 'specialization.mode')
     eq(value.im?.chunking?.typingJitterRatio, 0.1, 'typingJitterRatio 未被取整破坏')
