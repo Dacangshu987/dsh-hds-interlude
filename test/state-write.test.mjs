@@ -275,6 +275,49 @@ await ok('日志回退（会话被压缩/重置）时账本必须保留', async 
   assert.equal(folded.ledger.nextId, 2, '发号器也要保留')
 })
 
+/* ------------------------------------- ⑦ 对话后续补写时刻的落盘与防御读取 */
+
+await ok('对话后续补写时刻：落盘往返，坏值与超限被清洗', async () => {
+  const key = 'k-follow-up-at'
+  const state = emptyState()
+  // 乱序 + 一条坏值 + 一条非字符串 + 一条合法值。
+  state.conversationFollowUpAt = [
+    '2026-10-13T10:20:00.000Z',
+    'not-a-date',
+    12345,
+    '2026-10-13T10:10:00.000Z',
+  ]
+  saveState(key, state)
+
+  const back = loadState(key)
+  assert.deepEqual(
+    back.conversationFollowUpAt,
+    ['2026-10-13T10:10:00.000Z', '2026-10-13T10:20:00.000Z'],
+    '坏值被丢弃，其余按时间升序',
+  )
+})
+
+await ok('对话后续补写时刻：最多保留 6 个（与上游上限一致）', async () => {
+  const key = 'k-follow-up-cap'
+  const state = emptyState()
+  state.conversationFollowUpAt = Array.from({ length: 9 }, (_, i) =>
+    new Date(Date.UTC(2026, 9, 13, 10, i + 1)).toISOString())
+  saveState(key, state)
+
+  const back = loadState(key)
+  assert.equal(back.conversationFollowUpAt.length, 6, `实际 ${back.conversationFollowUpAt.length}`)
+  // 截断发生在排序**之后**，留下的是最早的 6 个。
+  assert.equal(back.conversationFollowUpAt[0], '2026-10-13T10:01:00.000Z')
+})
+
+await ok('对话后续补写时刻：坏类型降级为空数组，不抛错', async () => {
+  const key = 'k-follow-up-bad'
+  const state = emptyState()
+  state.conversationFollowUpAt = 'not-an-array'
+  saveState(key, state)
+  assert.deepEqual(loadState(key).conversationFollowUpAt, [])
+})
+
 try { fs.rmSync(TMP_HOME, { recursive: true, force: true }) } catch { /* ignore */ }
 
 console.log(`\n✅ 全部通过（${passed} 项）`)

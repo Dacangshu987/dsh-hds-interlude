@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict'
 
-import { decideAdvanceDelivery, extractSpeech, extractQuotedLine, speechContentOf, looksLikeSelfNarration } from '../lib/story.js'
+import { decideAdvanceDelivery, extractSpeech, extractQuotedLine, speechContentOf, looksLikeSelfNarration, normalizeFollowUpMinutes, scheduleConversationFollowUps, manualAdvanceGate } from '../lib/story.js'
 
 let passed = 0
 let failed = 0
@@ -403,6 +403,94 @@ check('显式发言也要过绑定/间隔/配额这些门', () => {
   assert.equal(decideAdvanceDelivery({ ...base, lastMessageAt: Date.now(), messageIntervalMinutes: 120 }).reason, 'message-interval')
   assert.equal(decideAdvanceDelivery({ ...base, reachedOut: 6 }).reason, 'daily-quota')
   assert.equal(decideAdvanceDelivery({ ...base, autoMessageEnabled: false }).reason, 'auto-message-disabled')
+})
+
+/* ───────────── 对话后续补写（对话结束后额外补写生活的时间点） ───────────── */
+
+const ANCHOR = new Date('2026-10-13T10:00:00Z')
+const minutesFrom = (times, base = ANCHOR) => times.map(t => (t - base.getTime()) / 60_000)
+
+check('normalizeFollowUpMinutes：默认值、越界剔除、去重、升序、上限 6', () => {
+  assert.deepEqual(normalizeFollowUpMinutes(undefined), [10, 20], '未配置用默认')
+  // 空数组是**显式关闭**该回路（与上游一致：Array.isArray([]) 为真，走用户值）。
+  assert.deepEqual(normalizeFollowUpMinutes([]), [], '空数组 = 关闭，不回落默认')
+  // 乱序 + 重复 + 越界（0 / 999）+ 小数
+  assert.deepEqual(normalizeFollowUpMinutes([20, 5, 5, 999, 0, 10.7, 300]), [5, 10, 20])
+  // 上限 6 个
+  assert.equal(normalizeFollowUpMinutes([1, 2, 3, 4, 5, 6, 7, 8]).length, 6)
+  // 全部越界 → 空（等于关闭）
+  assert.deepEqual(normalizeFollowUpMinutes([0, 999]), [])
+})
+
+check('scheduleConversationFollowUps：抖动为 0 时精确落在配置时间点', () => {
+  const times = scheduleConversationFollowUps(ANCHOR, { followUpMinutes: [10, 20], followUpJitterMinutes: 0 })
+  assert.deepEqual(minutesFrom(times), [10, 20])
+})
+
+check('scheduleConversationFollowUps：抖动是对称的（不是只往后推）', () => {
+  // random()=0 → 取抖动下界；random()=1 → 取上界。两端都要能看到。
+  const low = scheduleConversationFollowUps(ANCHOR, { followUpMinutes: [10], followUpJitterMinutes: 3, random: () => 0 })
+  const high = scheduleConversationFollowUps(ANCHOR, { followUpMinutes: [10], followUpJitterMinutes: 3, random: () => 1 })
+  assert.deepEqual(minutesFrom(low), [7], '下界：提前 3 分钟')
+  assert.deepEqual(minutesFrom(high), [13], '上界：推后 3 分钟')
+})
+
+check('scheduleConversationFollowUps：抖动不会把时刻推到锚点之前', () => {
+  // 配置 2 分钟、抖动 8 分钟 → 下界会算到 -6，必须夹到锚点之后。
+  const times = scheduleConversationFollowUps(ANCHOR, { followUpMinutes: [2], followUpJitterMinutes: 8, random: () => 0 })
+  assert.ok(times[0] > ANCHOR.getTime(), '补写时刻必须晚于锚点')
+})
+
+check('scheduleConversationFollowUps：时刻严格递增（抖动不会让顺序倒挂）', () => {
+  // 两个很近的时间点 + 大抖动，是最容易倒挂的情形。
+  for (const roll of [0, 0.5, 1]) {
+    const times = scheduleConversationFollowUps(ANCHOR, { followUpMinutes: [10, 11], followUpJitterMinutes: 5, random: () => roll })
+    assert.ok(times[0] < times[1], `roll=${roll} 时仍应递增：${JSON.stringify(minutesFrom(times))}`)
+    assert.ok(times[0] > ANCHOR.getTime(), '首个仍晚于锚点')
+  }
+})
+
+check('scheduleConversationFollowUps：坏输入安全', () => {
+  assert.deepEqual(scheduleConversationFollowUps(new Date('bad')), [], '非法锚点返回空数组')
+  assert.deepEqual(scheduleConversationFollowUps(Number.NaN), [], 'NaN 锚点同样返回空数组')
+  // 空数组 = 关闭该回路 → 不排任何补写。
+  assert.deepEqual(scheduleConversationFollowUps(ANCHOR, { followUpMinutes: [] }), [])
+  // 锚点也接受 epoch 毫秒。
+  assert.deepEqual(minutesFrom(scheduleConversationFollowUps(ANCHOR.getTime(), { followUpMinutes: [5], followUpJitterMinutes: 0 })), [5])
+})
+
+/* ───────────────────── 手动推进下限（minimumAdvanceMinutes） ───────────────────── */
+
+const MIN = 60_000
+
+check('manualAdvanceGate：距上次不足下限且无到期待办 → 拦下', () => {
+  const r = manualAdvanceGate({ sinceLastAdvance: 5 * MIN, minimumAdvanceMinutes: 30 })
+  assert.equal(r.blocked, true)
+  assert.equal(r.limitMinutes, 30)
+})
+
+check('manualAdvanceGate：够了下限就放行', () => {
+  assert.equal(manualAdvanceGate({ sinceLastAdvance: 30 * MIN, minimumAdvanceMinutes: 30 }).blocked, false, '正好到点应放行')
+  assert.equal(manualAdvanceGate({ sinceLastAdvance: 31 * MIN, minimumAdvanceMinutes: 30 }).blocked, false)
+})
+
+check('manualAdvanceGate：有到期待办时不受下限约束（承诺优先）', () => {
+  // 这是这条判据最要紧的一点：角色答应的事到点了，不该被「刚推过」挡住。
+  assert.equal(
+    manualAdvanceGate({ sinceLastAdvance: 1 * MIN, minimumAdvanceMinutes: 30, dueCount: 1 }).blocked,
+    false,
+  )
+  assert.equal(
+    manualAdvanceGate({ sinceLastAdvance: 0, minimumAdvanceMinutes: 30, dueCount: 3 }).blocked,
+    false,
+  )
+})
+
+check('manualAdvanceGate：从未推进过（Infinity）放行；坏配置夹到下限 1', () => {
+  assert.equal(manualAdvanceGate({ sinceLastAdvance: Infinity, minimumAdvanceMinutes: 30 }).blocked, false)
+  const bad = manualAdvanceGate({ sinceLastAdvance: 10 * MIN, minimumAdvanceMinutes: 0 })
+  assert.equal(bad.limitMinutes, 1, '0 夹到 1（schema 最小也是 1）')
+  assert.equal(bad.blocked, false, '10 分钟 > 1 分钟下限')
 })
 
 console.log(`\n故事续写判定：通过 ${passed} 项，失败 ${failed} 项`)
