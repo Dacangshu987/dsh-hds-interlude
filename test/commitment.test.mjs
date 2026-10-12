@@ -101,6 +101,49 @@ console.log('认时间点：只认明确的将来时间，不乱猜')
   assert.equal(detectCommitment('哪儿冷漠了\n\n我不是秒回了吗'), undefined)
 })
 
+/* ------------------- 二之零、2026-10-12 事故：剧情散文被误记成承诺 --------------- */
+
+console.log('\n事故回归：剧情散文不得被误记成承诺')
+
+await check('完成体「…了一会儿」不是「等会儿」（事故直接触发句）', () => {
+  // 线上 i31：这句被记成承诺，到期后把整段剧情发到了 QQ（用户实测截图）。
+  assert.equal(
+    detectCommitment('周日晚上跟家里视频了一会儿，我妈说柿子还留着一筐，等我过年回去'),
+    undefined,
+    '「视频了一会儿」是已发生动作的时长，不是「等会儿再说」',
+  )
+  assert.equal(detectCommitment('沙发窝了没一会儿，肚子就叫了'), undefined)
+  assert.equal(detectCommitment('在家躺了一会儿，没睡着，就听着院里的虫声'), undefined)
+  assert.equal(detectCommitment('靠着沙发没一会儿，眼皮又沉下去，这回是真睡着了'), undefined)
+})
+
+await check('第三人称转述不是她的承诺（具名转述同样要挡）', () => {
+  // 原判据只认「他/她/别人」，于是具名转述（我妈/小鹿）全部漏网。
+  assert.equal(detectCommitment('我妈说晚饭晚点吃，中午那顿吃得晚'), undefined)
+  assert.equal(detectCommitment('小鹿这两天在外面玩，早上发了条消息说晚点回'), undefined)
+  assert.equal(detectCommitment('我妈正坐在灯下择菜，说是明天早上要用的'), undefined)
+  assert.equal(detectCommitment('我妈说明天带我去镇上'), undefined)
+  assert.equal(detectCommitment('他说晚点给我打电话'), undefined, '代词转述照旧要挡')
+})
+
+await check('开放性邀请与她自己的待定都不是承诺', () => {
+  assert.equal(detectCommitment('明天要是想说话，随时'), undefined, '「要是…随时」是开放邀请')
+  assert.equal(detectCommitment('明天要不要回老家，醒来再说'), undefined, '「要不要…再说」是她自己的待定')
+  assert.equal(detectCommitment('先歇一会儿再说吧'), undefined, '「一会儿再说」是当即动作，不是稍后为她做事')
+  assert.equal(detectCommitment('这是在回应我说的明天要早睡，说真的'), undefined, '元叙述')
+})
+
+await check('真承诺必须一条不漏（收紧判据不能把该记的也丢掉）', () => {
+  for (const s of [
+    '等会儿喊你', '晚点提醒你', '行，三分钟后喊你', '晚点我打给你',
+    '等会儿我提醒你', '明天早上我叫你起床', '我去查查，回头说',
+    '我先想想，晚点告诉你', '我明天再跟你说这事', '三分钟后见',
+    '等会儿见', '回头喊你', '稍后联系你', '明早喊你',
+  ]) {
+    assert.ok(detectCommitment(s), `漏掉了真承诺：${s}`)
+  }
+})
+
 /* -------------------------------------------- 二、线上那句原话必须被认出 */
 
 /* ------------------------ 二之一、逐句判定：不得跨句凑成承诺（线上误记回归） */
@@ -186,6 +229,13 @@ function makeHost() {
         followup() {
           setTimeout(() => {
             ctx.emit('session/event', agent.session, { type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: '水喝了没' }] } } })
+            // **对齐上游口径（2026-10-12）**：到期待办只投递模型显式申报的发言
+            // （`interlude_say`），不再拿正文当消息。要验证「真的发出去了」的
+            // 用例必须走工具通道。
+            ctx.emit('session/event', agent.session, {
+              type: 'tool/call',
+              data: { turn: 1, step: 1, callId: 'say_1', name: 'interlude_say', arguments: JSON.stringify({ text: '水喝了没' }) },
+            })
             ctx.emit('session/event', agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
           }, 5)
         },

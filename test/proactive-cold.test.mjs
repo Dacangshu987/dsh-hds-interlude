@@ -346,10 +346,16 @@ function makeHost(options = {}) {
             })
             // `speech` 用来复现「插件唤起的回合里模型调了 interlude_say」——
             // 这正是重复投递 bug 的现场：主动路径与交互式路径都会看见这段话。
-            if (options.speech) {
+            //
+            // **对齐上游口径（2026-10-12）**：到期待办路径现在只投递模型
+            // **显式申报**的发言，不再拿正文当消息。所以「要说话」的用例必须用
+            // `speech`（或待办里的 `speech` 字段）声明；只给 `reply` 的用例
+            // 走的是「写了正文但没开口」路径，一条都不会发出去。
+            const spoken = options.speech ?? intent?.speech
+            if (spoken) {
               ctx.emit('session/event', this.session, {
                 type: 'tool/call',
-                data: { turn: 1, step: 1, callId: 'say_1', name: 'interlude_say', arguments: JSON.stringify({ text: options.speech }) },
+                data: { turn: 1, step: 1, callId: 'say_1', name: 'interlude_say', arguments: JSON.stringify({ text: spoken }) },
               })
             }
             ctx.emit('session/event', this.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
@@ -423,6 +429,11 @@ async function bootWithPendingIntent({ sessionId, intent = {}, pluginConfig = {}
     dueAt: now + (item.dueInMs ?? -1000),
     createdAt: now - 60_000,
     status: 'pending',
+    // **对齐上游口径（2026-10-12）**：到期待办路径只投递模型显式申报的发言
+    // （`interlude_say`），不再拿正文当消息。所以这里给一个默认发言——
+    // 相当于「模型确实开了这个口」。想验证「只写正文、不开口」的用例
+    // 显式传 `speech: null` 即可。
+    ...(item.speech === null ? { speech: undefined } : { speech: item.speech ?? item.reply ?? '水喝了没' }),
     ...item,
   }))
 
@@ -600,6 +611,37 @@ await check('模型把思考过程写成正文 → 一条都不发，且不重�
   await host.ctx.stop?.()
 })
 
+await check('剧情散文正文 → 一条都不发（2026-10-12 事故回归）', async () => {
+  // 用户实测：到期待办唤起角色后，模型续写生活、没调 interlude_say，
+  // 旧实现把整段正文当消息投递，用户收到「凌晨零点半，我早睡沉了……」
+  // 这类**第三人称叙事**（截图 4 条）。
+  //
+  // 对齐上游 `service.ts:5601` 后：只有模型显式调用 `interlude_say` 的内容
+  // 才会被投递，正文一律不发。这条用例钉住这个契约。
+  const sessionId = 'session-cold-narrative-prose'
+  const prose = [
+    '凌晨零点半，我早睡沉了。枕头边那只手机一直没再亮，那句话之后他没接，我也没等。屋里黑着，窗帘缝里透进来一点城市的光。',
+    '',
+    '窗外偶尔有车经过，声音从远到近，再拖远。冰箱在厨房那头低声响着，隔一阵停一下。明天六点半的闹钟。',
+  ].join('\n')
+  const host = await bootWithPendingIntent({
+    sessionId,
+    intent: { id: 'i1', summary: '答应过对方：周日晚上跟家里视频了一会儿', reply: prose, speech: null, dueInMs: -1000 },
+  })
+
+  // 待办要**结算**（否则下次扫描又到点、又白唤起一次模型）。
+  const settled = await waitFor(() => loadState(sessionId).intents[0]?.status === 'delivered', 12000)
+  assert.ok(settled, '没开口也应当结算待办，避免反复唤起')
+  assert.equal(
+    host.sent.length, 0,
+    `剧情散文一条都不该发出去，实际：${JSON.stringify(host.sent.map(m => m.text))}`,
+  )
+  const after = loadState(sessionId)
+  assert.equal(after.intents[0].skippedReason, 'no-explicit-speech', '应记下「没开口」的原因')
+  assert.equal(after.reachedOut ?? 0, 0, '没发出去就不该占主动联系名额')
+  await host.ctx.stop?.()
+})
+
 await check('纯旁白正文 → 一条都不发（cleanImText 删光后不能当「没内容」放过）', async () => {
   // 只读核查发现的漏网：整行括号旁白会被 cleanImText 整行删掉，
   // 删完 cleaned 变成空串，原实现直接 `if (!cleaned) return { leak: false }` ——
@@ -688,6 +730,13 @@ await check('投递失败重试时**不重新生成**内容，也不重复已送
         host.ctx.emit('session/event', session, {
           type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'text', text }] } },
         })
+        // **对齐上游口径（2026-10-12）**：只有模型显式调用 interlude_say 的内容
+        // 才会被投递（正文不再当消息）。这个用例验的是「部分失败后重发同一段」，
+        // 所以这里必须走工具通道。
+        host.ctx.emit('session/event', session, {
+          type: 'tool/call',
+          data: { turn: 1, step: 1, callId: 'say_1', name: 'interlude_say', arguments: JSON.stringify({ text }) },
+        })
         host.ctx.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
       }, 5)
     },
@@ -715,7 +764,8 @@ await check('投递失败重试时**不重新生成**内容，也不重复已送
   await host.ctx.stop?.()
 })
 
-await check('投递失败会保留待办而不是假装送达', async () => {  const sessionId = 'session-cold-fail'
+await check('投递失败会保留待办而不是假装送达', async () => {
+  const sessionId = 'session-cold-fail'
 
   const host = makeHost()
   let attempts = 0
@@ -740,7 +790,27 @@ await check('投递失败会保留待办而不是假装送达', async () => {  c
 
   const fiber = host.ctx.plugin(plugin, config)
   if (fiber && typeof fiber.then === 'function') await fiber
-  await sleep(30)
+
+  // 让模型**真的开口**（走 interlude_say），这样才真的会尝试投递。
+  // 对齐上游口径后，只写正文不会触发投递，所以必须走工具通道。
+  const session = { id: sessionId, header: { id: sessionId, agentPreset: PRESET }, seq: 0, eventAt: () => undefined }
+  const fakeLive = {
+    id: sessionId, session,
+    followup() {
+      setTimeout(() => {
+        host.ctx.emit('session/event', session, {
+          type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: '（看了眼手机）' }] } },
+        })
+        host.ctx.emit('session/event', session, {
+          type: 'tool/call',
+          data: { turn: 1, step: 1, callId: 'say_1', name: 'interlude_say', arguments: JSON.stringify({ text: '水喝了没' }) },
+        })
+        host.ctx.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+      }, 5)
+    },
+  }
+  host.live.set(sessionId, fakeLive)
+  host.ctx.emit('agent/session-start', { agent: fakeLive })
 
   await waitFor(() => attempts > 0, 12000)
   const after = loadState(sessionId)
