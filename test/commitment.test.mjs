@@ -308,6 +308,12 @@ await (async () => {
     type: 'assistant/message',
     data: { turn: 5, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '行\n\n三分钟后喊你\n\n你先回我，是不是又没喝水' }] } },
   })
+  // 关键：承诺是**经 interlude_say 说出去的**（上游口径：兜底只看用户真的
+  // 看到的那段回复）。只写正文不算「说过」，见下一条用例。
+  host.ctx.emit('session/event', agent.session, {
+    type: 'tool/call',
+    data: { turn: 5, step: 1, callId: 'say_1', name: 'interlude_say', arguments: JSON.stringify({ text: '行\n三分钟后喊你' }) },
+  })
   host.ctx.emit('session/event', agent.session, { type: 'turn/end', data: { turn: 5, reason: { kind: 'completed' } } })
   await sleep(120)
 
@@ -330,6 +336,11 @@ await (async () => {
     host.ctx.emit('session/event', agent.session, {
       type: 'assistant/message',
       data: { turn: 6, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '行\n\n三分钟后喊你\n\n你先回我，是不是又没喝水' }] } },
+    })
+    // 同样要经 interlude_say 说出去（兜底只看用户看到的回复）。
+    host.ctx.emit('session/event', agent.session, {
+      type: 'tool/call',
+      data: { turn: 6, step: 1, callId: 'say_2', name: 'interlude_say', arguments: JSON.stringify({ text: '行\n三分钟后喊你' }) },
     })
     host.ctx.emit('session/event', agent.session, { type: 'turn/end', data: { turn: 6, reason: { kind: 'completed' } } })
     await sleep(120)
@@ -420,18 +431,79 @@ await (async () => {
     const session = { id: QQ, header: { id: QQ, agentPreset: PRESET }, seq: 0, eventAt: () => undefined }
     h.ctx.emit('agent/session-start', { agent: { id: QQ, session } })
 
-    const say = async (userText, reply, turn) => {
+    // `speech` 是**经 interlude_say 真的说出去的那部分**——兜底只看用户
+    // 看到过的内容（上游口径），所以承诺句必须放进 speech 才能被兜底。
+    const say = async (userText, reply, turn, speech) => {
       h.ctx.emit('session/event', session, { type: 'user/message', data: { content: [{ type: 'text', text: userText }], source: { kind: 'user', rpcId: `r${turn}` } } })
       h.ctx.emit('session/event', session, { type: 'assistant/message', data: { turn, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: reply }] } } })
+      h.ctx.emit('session/event', session, { type: 'tool/call', data: { turn, step: 1, callId: `say_${turn}`, name: 'interlude_say', arguments: JSON.stringify({ text: speech }) } })
       h.ctx.emit('session/event', session, { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } })
       await sleep(120)
     }
 
-    await say('三分钟后提醒我喝水', '行\n\n三分钟后喊你\n\n你先回我，是不是又没喝水', 5)
-    await say('对', '我就知道\n\n行吧，三分钟后见\n\n你先坐着别动', 6)
+    await say('三分钟后提醒我喝水', '行\n\n三分钟后喊你\n\n你先回我，是不是又没喝水', 5, '行\n三分钟后喊你')
+    await say('对', '我就知道\n\n行吧，三分钟后见\n\n你先坐着别动', 6, '行吧，三分钟后见')
 
     const auto = loadState(QQ).intents.filter(i => i.auto === 'commitment-backstop')
     assert.equal(auto.length, 1, `同一件事被记了 ${auto.length} 条：${JSON.stringify(auto.map(i => i.summary))}`)
+
+    await h.ctx.stop?.()
+  })
+
+  await check('剧情散文不产生承诺（2026-10-12 事故的结构性根治）', async () => {
+    // 事故：脚本散文里「周日晚上跟家里视频了**一会儿**…等我过年回去」被兜底
+    // 记成承诺，到点唤起模型、再把续写的散文投递到 QQ（用户实测 4 条）。
+    //
+    // 上游口径：兜底只扫**用户真的看到的那段回复**（`interaction.reply.content`）。
+    // 本仓据此把扫描范围从「整个正文」收窄成「经 interlude_say 投递的发言」——
+    // 于是散文**从不等于**「她说过的话」，这条误判路径从根上不存在。
+    fs.rmSync(TEST_HOME, { recursive: true, force: true })
+    writeIntegration()
+    const h = makeHost()
+    const st = emptyState()
+    st.canonInjected = true
+    st.roleplay = true
+    st.lastUserAt = Date.now()
+    saveState(QQ, st)
+    clearImBindingCache()
+
+    const fiber = h.ctx.plugin(plugin, plugin.Config({
+      timeZone: 'Asia/Shanghai',
+      proactive: { checkIntervalMinutes: 60, graceMinutes: 0 },
+      im: { enabled: false },
+    }))
+    if (fiber?.then) await fiber
+    await sleep(60)
+
+    const session = { id: QQ, header: { id: QQ, agentPreset: PRESET }, seq: 0, eventAt: () => undefined }
+    h.ctx.emit('agent/session-start', { agent: { id: QQ, session } })
+
+    // 一整段剧情散文，**没有** interlude_say：里面满是「一会儿」「等我…」这类词，
+    // 但它们只是叙事，不是她对外说过的话。
+    const prose = [
+      '周日晚上跟家里视频了一会儿，我妈说柿子还留着一筐，等我过年回去。',
+      '沙发窝了没一会儿，肚子就叫了。',
+      '在家躺了一会儿，没睡着，就听着院里的虫声。',
+    ].join('\n')
+    h.ctx.emit('session/event', session, { type: 'user/message', data: { content: [{ type: 'text', text: '在吗' }], source: { kind: 'user', rpcId: 'r1' } } })
+    h.ctx.emit('session/event', session, { type: 'assistant/message', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: prose }] } } })
+    h.ctx.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await sleep(150)
+
+    const afterProse = loadState(QQ).intents.filter(i => i.auto === 'commitment-backstop')
+    assert.equal(afterProse.length, 0, `纯散文不该产生承诺，实际：${JSON.stringify(afterProse.map(i => i.summary))}`)
+
+    // 对照：同样的话**经 interlude_say 说出去**了 → 该兜底（证明上面那条不是
+    // 因为别的原因没跑起来，而是范围收窄在起作用）。
+    h.ctx.emit('session/event', session, { type: 'user/message', data: { content: [{ type: 'text', text: '那你忙' }], source: { kind: 'user', rpcId: 'r2' } } })
+    h.ctx.emit('session/event', session, { type: 'assistant/message', data: { turn: 2, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '（把手机扣在桌上。）' }] } } })
+    h.ctx.emit('session/event', session, { type: 'tool/call', data: { turn: 2, step: 1, callId: 'say_2', name: 'interlude_say', arguments: JSON.stringify({ text: '我去查查，回头说' }) } })
+    h.ctx.emit('session/event', session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+    await sleep(150)
+
+    const afterSpeech = loadState(QQ).intents.filter(i => i.auto === 'commitment-backstop')
+    assert.equal(afterSpeech.length, 1, `说了但没记的承诺应被兜底，实际：${JSON.stringify(afterSpeech.map(i => i.summary))}`)
+    assert.ok(afterSpeech[0].summary.includes('我去查查'), afterSpeech[0].summary)
 
     await h.ctx.stop?.()
   })
