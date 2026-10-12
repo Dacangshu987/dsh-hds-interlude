@@ -199,6 +199,16 @@ const state = {
     formatPrompt: '格式附加自定义',
     fixedPrompt: '固定指令自定义',
     stylePrompt: '文风自定义',
+    // 剧本起点（对齐上游 StoryDefaults）：含两个上游新增的多条目字段。
+    story: {
+      character: { name: '江柚', profile: '设计师', speech: '爱用短句' },
+      perspective: '单条价值观',
+      perspectives: ['第一条独立价值观', '第二条独立价值观'],
+      supplementaryFacts: ['她怕黑', '左耳有点背'],
+      world: { setting: '2026 年杭州', location: '城西', supportingCast: '小鹿：同事' },
+      counterpart: { profile: '老同学', initial: '熟悉但近来联系不多' },
+      plot: { startingPoint: '刚搬完家', style: '克制写实', boundaries: '不提系统', keywords: ['加班'] },
+    },
     im: {
       enabled: true,
       group: {
@@ -270,6 +280,30 @@ function openAdvanced(t) {
   if (btn) { btn.props.onClick(); view.render() }
   return view.get()
 }
+
+/* ─────────────────── A0. 创作页：剧本起点（对齐上游 StoryDefaults） ─────────────────── */
+
+const storyTab = goTab('创作')
+check('创作页读回旧嵌套形态的故事字段', () => {
+  eq(controlNearLabel(storyTab, '主角名称').props.value, '江柚', 'character.name')
+  eq(controlNearLabel(storyTab, '说话风格').props.value, '爱用短句', 'character.speech（本仓专有）')
+  eq(controlNearLabel(storyTab, '世界设定').props.value, '2026 年杭州', 'world.setting')
+  eq(controlNearLabel(storyTab, '当前故事文风').props.value, '克制写实', 'plot.style')
+})
+
+check('创作页有上游两个多条目字段，且按行读回（rc50 StoryDefaults）', () => {
+  // perspectives 在「角色」组、supplementaryFacts 在「世界」组；都是每行一条。
+  eq(
+    controlNearLabel(storyTab, '价值观·多条独立条目').props.value,
+    '第一条独立价值观\n第二条独立价值观',
+    'perspectives 应按行读回',
+  )
+  eq(
+    controlNearLabel(storyTab, '补充事实').props.value,
+    '她怕黑\n左耳有点背',
+    'supplementaryFacts 应按行读回',
+  )
+})
 
 /* ─────────────────── A. 聊天页：打字节奏（与分条同段） ─────────────────── */
 
@@ -376,6 +410,8 @@ current = await setValue(controlNearLabel(goTab('扩展'), '休息时段'), '23:
 // 扩展页：改提示词四层（对齐上游 rc50）
 current = await setValue(controlNearLabel(goTab('扩展'), '主体叙事提示词（mainPrompt）'), '新的主体叙事')
 current = await setValue(controlNearLabel(current, '文风（stylePrompt）'), '新的文风')
+// 创作页：把 perspectives 清空（验「送空数组」，否则深合并会把旧条目留下）
+current = await setValue(controlNearLabel(goTab('创作'), '价值观·多条独立条目'), '')
 
 const saveBtn = buttonByText(current ?? view.get(), '保存')
 check('找到保存按钮', () => { assert.ok(saveBtn, '没有保存按钮') })
@@ -394,6 +430,10 @@ if (saveCall) {
     eq(value.im?.crossConversation?.maxPerTurn, 3, 'im.crossConversation.maxPerTurn')
     eq(value.worldSeeder?.cadenceMinutes, 50, 'worldSeeder.cadenceMinutes')
     eq(value.specialization?.modelProbe, 'claude-sonnet', 'specialization.modelProbe')
+    // 清空的多条目字段必须显式送 []（漏送 → 深合并把旧条目留下 → 用户「删不掉」）。
+    eq(value.story?.perspectives, [], 'story.perspectives 清空后应送 []')
+    // 没动过的那个照旧带上。
+    eq(value.story?.supplementaryFacts, ['她怕黑', '左耳有点背'], 'story.supplementaryFacts')
   })
   check('未改动的相关字段仍在（没有被面板漏写而丢失）', () => {
     eq(value.im?.forwardLimits?.maxDepth, 1, 'im.forwardLimits.maxDepth')
