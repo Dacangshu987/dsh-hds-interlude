@@ -253,6 +253,8 @@ const state = {
       minimumAdvanceMinutes: 45,
     },
     proactive: { duringSleep: true, duringSleepPromises: false },
+    // 长线叙事催化器（实验，对齐上游 longHorizon 段）：刻意用非默认值。
+    longHorizon: { enabled: true, triggerScore: 60, reviewIncrement: 120, intensity: 'moderate' },
   },
 }
 const { fetchImpl, calls } = makeFetch(state)
@@ -387,6 +389,14 @@ check('聊天页有意愿档位（rc23）：档位 = auto，三态映射读回',
 /* ─────────────────── C. 扩展页：播种器 / 模型特化 ─────────────────── */
 
 const advanced = goTab('扩展')
+
+check('扩展页有长线叙事催化器（实验，对齐上游 longHorizon），且读回配置值', () => {
+  // 夹具里 enabled: true → 复选框应勾上，且条件渲染出三个控件。
+  eq(checkboxNear(advanced, '启用：累计加权叙事证据').props.checked, true, '开关读回')
+  eq(Number(controlNearLabel(advanced, '首次触发门槛').props.value), 60, 'triggerScore')
+  eq(Number(controlNearLabel(advanced, '复审增量').props.value), 120, 'reviewIncrement')
+  eq(controlNearLabel(advanced, '指导强度').props.value, 'moderate', 'intensity')
+})
 check('扩展页有世界事件播种器（rc23）并读回配置值', () => {
   const cb = checkboxNear(advanced, '启用：低频生成与她有关的外部事件')
   assert.ok(cb, '没找到播种器开关')
@@ -584,6 +594,10 @@ if (saveCall) {
     // 尚未接线的上游同名项：留着是为了与上游配置对齐，进来之前不该给用户一个假开关。
     'story.storyTimezone': '上游同名项，本仓统一用顶层 timeZone（尚未接线）',
     'runtime.userMessageDebounceSeconds': '本版本不生效：连输入的合并由 DSH 宿主处理',
+    // 上游固定值：这两项在 schema 里只为**读取旧配置**而存在，
+    // 实际权重固定 1.0 / 0.5（隐私/关系权重契约）。给它们输入框等于假开关。
+    'longHorizon.privateWeight': '上游固定 1.0（权重契约），配置不生效',
+    'longHorizon.groupWeight': '上游固定 0.5（权重契约），配置不生效',
   }
   const isAllowed = (path) => Object.keys(NOT_EXPOSED).some((key) => (
     key.endsWith('.') ? path.startsWith(key) : path === key
