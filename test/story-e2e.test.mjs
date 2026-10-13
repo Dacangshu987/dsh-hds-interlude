@@ -84,7 +84,7 @@ function makeHost() {
 }
 
 /** 造一个会写出指定文本的实时 agent，并在 attach 后把 pre-step 的注入截下来。 */
-async function scenario({ sessionId, reply, binding, canonInjected = true }) {
+async function scenario({ sessionId, reply, binding, speech, canonInjected = true }) {
   // 每个场景都从零开始：状态目录与集成目录一起清掉（见 resetFixtures 的说明）。
   resetFixtures()
   if (binding) bindIm(sessionId)
@@ -99,6 +99,13 @@ async function scenario({ sessionId, reply, binding, canonInjected = true }) {
           type: 'assistant/message',
           data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: reply }] } },
         })
+        // 台词走**工具申报**（2026-10-13 起正文不再参与投递判定）。
+        if (speech) {
+          host.ctx.emit('session/event', agent.session, {
+            type: 'tool/call',
+            data: { turn: 1, step: 1, callId: 'say_1', name: 'interlude_say', arguments: JSON.stringify({ text: speech }) },
+          })
+        }
         host.ctx.emit('session/event', agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
       }, 5)
     },
@@ -145,10 +152,13 @@ const check = async (label, fn) => {
 console.log('端到端形态')
 
 await check('绑定会话 + 续写里有台词 → 只发那句，旁白留在故事里', async () => {
+  // 台词来自**工具申报**（2026-10-13 起正文不再参与投递判定）；
+  // 正文仍是旁白，用来验证它一个字都不进聊天窗口。
   const r = await scenario({
     sessionId: 'session-smoke-speak',
     binding: true,
-    reply: '（下班回来，把包往沙发上一扔，先去看了眼绿萝。）\n\n先浇了水。\n\n“在忙吗”',
+    reply: '（下班回来，把包往沙发上一扔，先去看了眼绿萝。）\n\n先浇了水。',
+    speech: '在忙吗',
   })
   const texts = r.sent.map(m => m.text)
   assert.ok(texts.some(t => t.includes('在忙吗')), JSON.stringify(texts))

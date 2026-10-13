@@ -1095,8 +1095,11 @@ await check('续写里角色说了话（整行引语）→ 只有那句话被发
   // 这一条同时是两个行为的回归：
   //   ① 线上 session-58be9b68 第 7 轮——角色写了话，聊天软件那头却是空的；
   //   ② 改版后新增的边界——**故事本身不发**，发出去的只有角色对用户说的那句。
+  //
+  // 2026-10-13 起台词只能来自**工具申报**（正文不再参与投递判定），
+  // 所以这里显式给 `speech`；正文仍是旁白，用来验证它一个字都不进聊天窗口。
   const sessionId = 'session-live-aa'
-  const host = await bootLiveAutoAdvance({ sessionId })
+  const host = await bootLiveAutoAdvance({ sessionId, speech: '在忙吗' })
 
   const receipt = await waitFor(() => loadState(sessionId).lastImDelivery, 12000)
   assert.ok(receipt, '角色说了话就必须发出去，而不是只留在故事里')
@@ -1118,7 +1121,9 @@ await check('续写里角色说了话（整行引语）→ 只有那句话被发
 
 await check('自动推进续写中遭遇 time-context 快照 + 调了 interlude_say → 只投一次，不发两遍（线上真实事故回归）', async () => {
   const sessionId = 'session-live-aa-timecontext-nodouble'
-  const speech = '我到老家了\n刚转的班车，我妈在路口接我，晚上炖排骨\n你忙完早点吃饭'
+  // 分条按上游 `<sep/>` 协议（2026-10-13 起换行**不再**是气泡边界）：
+  // 三段话要分成三条发出，必须写分隔符。
+  const speech = '我到老家了<sep/>刚转的班车，我妈在路口接我，晚上炖排骨<sep/>你忙完早点吃饭'
   const host = await bootLiveAutoAdvance({
     sessionId,
     speech,
@@ -1212,7 +1217,9 @@ await check('思考过程被写成正文（含候选台词引号）→ 一条都
   const after = loadState(sessionId)
   assert.equal(after.lastImDelivery ?? null, null, '不该留下投递回执')
   assert.equal(after.lastAdvanceDelivery?.mode, 'story-only')
-  assert.equal(after.lastAdvanceDelivery?.reason, 'self-narration')
+  // 2026-10-13 起正文**不再参与**投递判定，所以理由是 no-speech（结构性地没有
+  // 可发内容），而不是靠闸「认出它在自言自语」。这比识别更可靠。
+  assert.equal(after.lastAdvanceDelivery?.reason, 'no-speech')
   assert.equal(after.reachedOut ?? 0, 0, '没发出去就不该占主动联系名额')
   assert.ok(after.lastAutoAdvanceAt > 0, '故事本身照写（推进水位要落盘）')
   await host.ctx.stop?.()
@@ -1252,6 +1259,7 @@ await check('写故事间隔到了、发消息间隔也到了 → 才真的发�
   const sessionId = 'session-live-aa-interval-ok'
   const host = await bootLiveAutoAdvance({
     sessionId,
+    speech: '在忙吗',
     statePatch: { lastAutoMessageAt: Date.now() - 2 * 24 * 60 * 60_000 },
     pluginConfig: { im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 120 } },
   })
@@ -1264,7 +1272,7 @@ await check('写故事间隔到了、发消息间隔也到了 → 才真的发�
 
 await check('投递状态落盘：lastImDelivery 记下这次真的送到了（可自检）', async () => {
   const sessionId = 'session-live-aa-state'
-  const host = await bootLiveAutoAdvance({ sessionId })
+  const host = await bootLiveAutoAdvance({ sessionId, speech: '在忙吗' })
   await waitFor(() => loadState(sessionId).lastImDelivery, 12000)
 
   const after = loadState(sessionId)
