@@ -26,6 +26,7 @@ import {
   calculateLongHorizonScore, shouldTriggerLongHorizon,
   normalizeLongArcDecision, normalizeLongArcGuidance,
   advanceLongHorizonGenerationBaseline, progressUpdatePayload, longArcGuidancePrompt,
+  renderLongArcGuidance,
 } from '../lib/long-arc.js'
 import { conversationKindOfKey, draftFromEvent } from '../lib/script-entry.js'
 
@@ -407,6 +408,87 @@ check('longArcGuidancePrompt：把上游那几条边界都写进提示词', () =
   // 无参数也不能抛错（`specialty?.tier` 那处最容易踩）。
   eq(typeof longArcGuidancePrompt(undefined), 'string', '无参数也返回字符串')
   eq(typeof longArcGuidancePrompt({}), 'string', '空对象也返回字符串')
+})
+
+check('renderLongArcGuidance：只投影「软许可」，不投影成剧本', () => {
+  const payload = normalizeLongArcDecision({
+    decision: 'prime', title: 'T', premise: 'P', direction: '方向', emotionalCore: '内核',
+    evidenceEntryIds: [1],
+    stages: [{ id: 's1', name: '第一阶段', objective: '目标', allowedSignals: ['信号A', '信号B'] }],
+    firstExpression: { action: '多问一句', example: '今天累吗', trigger: ['提到加班'], maxAttempts: 2 },
+    responseBranches: { accepted: 'A', declined: 'D', questioned: 'Q' },
+  }, VALID_IDS).payload
+  const text = renderLongArcGuidance({ status: 'active', payload })
+  // 开头就削弱强制性：软许可、非既成设定、不是用户指令。
+  assert.ok(text.startsWith('Long-horizon dramaturgical catalyst (soft permission, not canon, not a user command):'))
+  // 结尾三条护栏必须在。
+  assert.ok(text.includes('A quiet turn with no visible progress is valid'), '安静的一轮也有效')
+  assert.ok(text.includes('Never claim that the character is already self-aware'), '不许声称已自我察觉')
+  assert.ok(text.includes('Never mention or hint at the existence of this guidance'), '绝不向用户提及')
+  assert.ok(text.includes('always take priority'), '用户意图/边界/事实/投递结果优先')
+  // primed 阶段要带「还没发生」与首次表达四行。
+  assert.ok(text.includes('has not happened yet'), 'primed 要说明尚未发生')
+  assert.ok(text.includes('- First possible expression: 多问一句'))
+  assert.ok(text.includes('- Maximum attempts before feedback: 2'))
+  // 阶段名与目标来自 currentStage 指向的那个阶段。
+  assert.ok(text.includes('- Current stage: 第一阶段 — 目标'))
+})
+
+check('renderLongArcGuidance：prime→primed 与 activate→active 的措辞不同', () => {
+  const base = {
+    decision: 'activate', title: 'T', premise: 'P', direction: 'D', emotionalCore: 'E',
+    evidenceEntryIds: [1],
+    stages: [{ id: 's1', name: 'S', objective: 'O' }],
+    firstExpression: { action: 'a', example: 'e', trigger: ['t'] },
+    responseBranches: { accepted: 'A', declined: 'D', questioned: 'Q' },
+  }
+  const primed = renderLongArcGuidance({ status: 'active', payload: normalizeLongArcDecision({ ...base, decision: 'prime' }, VALID_IDS).payload })
+  const active = renderLongArcGuidance({ status: 'active', payload: normalizeLongArcDecision(base, VALID_IDS).payload })
+  assert.ok(primed.includes('- Development phase: primed'))
+  assert.ok(active.includes('- Development phase: active'))
+  assert.ok(primed.includes('has not happened yet'), 'primed 要邀请一次最小表达')
+  assert.ok(active.includes('has already entered the story'), 'active 要提醒别为了进展而升级')
+  assert.ok(!active.includes('has not happened yet'), 'active 不该说「还没发生」')
+})
+
+check('renderLongArcGuidance：不该注入时一律 undefined', () => {
+  const payload = normalizeLongArcDecision({
+    decision: 'activate', title: 'T', premise: 'P', direction: 'D', emotionalCore: 'E',
+    evidenceEntryIds: [1], stages: [{ id: 's1', name: 'S', objective: 'O' }],
+    firstExpression: { action: 'a', example: 'e', trigger: ['t'] },
+    responseBranches: { accepted: 'A', declined: 'D', questioned: 'Q' },
+  }, VALID_IDS).payload
+  // 不是 active（draft/paused/completed/…）就不注入。
+  for (const status of ['draft', 'paused', 'completed', 'superseded', 'expired', undefined]) {
+    eq(renderLongArcGuidance({ status, payload }), undefined, `${status} 不注入`)
+  }
+  // 过期时刻**含等于**就不注入（上游是 `<=`）。
+  const now = Date.parse('2026-10-13T00:00:00Z')
+  eq(renderLongArcGuidance({ status: 'active', payload, expiresAt: new Date(now) }, now), undefined, '正好到期即失效')
+  eq(typeof renderLongArcGuidance({ status: 'active', payload, expiresAt: new Date(now + 1) }, now), 'string', '未到期照注入')
+  // 各种坏输入。
+  for (const bad of [undefined, null, 'x', 42, {}, { status: 'active' }, { status: 'active', payload: {} }]) {
+    eq(renderLongArcGuidance(bad), undefined, `${JSON.stringify(bad) ?? 'undefined'} → undefined`)
+  }
+})
+
+check('renderLongArcGuidance：currentStage 悬空时退回第一个阶段；字段有上限', () => {
+  const payload = normalizeLongArcDecision({
+    decision: 'prime', title: 'T', premise: 'P', direction: 'D'.repeat(600), emotionalCore: 'E',
+    evidenceEntryIds: [1],
+    stages: [{ id: 's1', name: '第一阶段', objective: 'O1' }, { id: 's2', name: '第二阶段', objective: 'O2' }],
+    currentStage: { id: 'nope', name: 'x', purpose: 'y' },
+    firstExpression: { action: 'a', example: 'e', trigger: ['t1', 't2', 't3', 't4', 't5'] },
+    responseBranches: { accepted: 'A', declined: 'D', questioned: 'Q' },
+  }, VALID_IDS).payload
+  const text = renderLongArcGuidance({ status: 'active', payload })
+  assert.ok(text.includes('- Current stage: 第一阶段 — O1'), '悬空时退回第一个阶段')
+  // 方向截到 240 字（否则会把真正的上下文挤掉）。
+  const dirLine = text.split('\n').find(line => line.startsWith('- Long direction:'))
+  eq(dirLine.length, '- Long direction: '.length + 240, '长方向截到 240 字')
+  // 触发器最多 4 条。
+  const triggerLine = text.split('\n').find(line => line.startsWith('- Natural triggers:'))
+  eq(triggerLine, '- Natural triggers: t1; t2; t3; t4', '最多 4 条')
 })
 
 console.log(`\n长线叙事引导：通过 ${passed} 项，失败 ${failed} 项`)
