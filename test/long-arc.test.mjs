@@ -26,7 +26,7 @@ import {
   calculateLongHorizonScore, shouldTriggerLongHorizon,
   normalizeLongArcDecision, normalizeLongArcGuidance,
   advanceLongHorizonGenerationBaseline, progressUpdatePayload, longArcGuidancePrompt,
-  renderLongArcGuidance,
+  renderLongArcGuidance, buildLongArcEvidence,
 } from '../lib/long-arc.js'
 import { conversationKindOfKey, draftFromEvent } from '../lib/script-entry.js'
 
@@ -489,6 +489,50 @@ check('renderLongArcGuidance：currentStage 悬空时退回第一个阶段；字
   // 触发器最多 4 条。
   const triggerLine = text.split('\n').find(line => line.startsWith('- Natural triggers:'))
   eq(triggerLine, '- Natural triggers: t1; t2; t3; t4', '最多 4 条')
+})
+
+check('buildLongArcEvidence：只给有叙事分量的条目，并交出可引用的 id 集合', () => {
+  const entries = [
+    { id: 1, kind: 'user-message', actor: 'user', content: '在吗' },
+    // 纯技术条目：不该出现在证据里（它不是「关系里发生的事」）。
+    { id: 2, kind: 'admin-note', actor: 'system', content: '技术注记' },
+    { id: 3, kind: 'script', actor: 'character', content: '她放下了杯子', metadata: { conversationKind: 'private' } },
+  ]
+  const built = buildLongArcEvidence({ entries, facts: [{ content: '她住在老城区' }], story: { character: { name: '江柚' } } })
+  assert.ok(built.text.includes('- Protagonist: 江柚'), '带上角色名')
+  assert.ok(built.text.includes('- 她住在老城区'), '带上长期事实')
+  assert.ok(built.text.includes('[1] (user) 在吗'), '证据带可引用的 id')
+  assert.ok(!built.text.includes('技术注记'), '纯技术条目不进证据')
+  // 合法 id 集合必须与文本里出现的一致——模型只能引用这些。
+  eq([...built.validEvidenceIds].sort((a, b) => a - b), [1, 3], '合法 id 集合')
+  assert.ok(built.text.includes('cite only these ids'), '要写明只能引用这些 id')
+})
+
+check('buildLongArcEvidence：正文压平截断、条数有上限、空数据不抛错', () => {
+  const entries = Array.from({ length: 40 }, (_, i) => ({
+    id: i + 1, kind: 'script', actor: 'character', content: `第${i + 1}条`,
+    metadata: { conversationKind: 'private' },
+  }))
+  const built = buildLongArcEvidence({ entries, limit: 5 })
+  // 只取最近的 5 条，且 id 集合只含这 5 条。
+  eq([...built.validEvidenceIds].sort((a, b) => a - b), [36, 37, 38, 39, 40], '只取最近 5 条')
+  assert.ok(!built.text.includes('第35条'), '更早的不出现')
+  // 多行正文压成一行（否则结构会被撑乱）。
+  const multiline = buildLongArcEvidence({ entries: [{ id: 9, kind: 'script', content: '上\n下', metadata: { conversationKind: 'private' } }] })
+  assert.ok(multiline.text.includes('[9] (script) 上 下'), '换行压成空格')
+  // 空数据：给「无」的占位而不是崩。
+  const empty = buildLongArcEvidence({})
+  assert.ok(empty.text.includes('(none)'), '无事实时给占位')
+  assert.ok(empty.text.includes('(no narrative evidence yet)'), '无证据时给占位')
+  eq([...empty.validEvidenceIds], [], '空数据没有可引用 id')
+  eq(buildLongArcEvidence().validEvidenceIds.size, 0, '无参数也不抛错')
+})
+
+check('buildLongArcEvidence：只读——不改动传入的条目', () => {
+  const entries = [{ id: 1, kind: 'script', content: '原文', metadata: { conversationKind: 'private' } }]
+  const before = JSON.parse(JSON.stringify(entries))
+  buildLongArcEvidence({ entries })
+  eq(entries, before, '传入数据不该被改动')
 })
 
 console.log(`\n长线叙事引导：通过 ${passed} 项，失败 ${failed} 项`)
