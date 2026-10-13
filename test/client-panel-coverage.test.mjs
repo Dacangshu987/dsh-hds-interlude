@@ -16,6 +16,7 @@
  * 运行真实组件，再驱动它的 onClick / onChange。
  */
 import { strict as assert } from 'node:assert'
+import { Config as ConfigSchema } from '../lib/schema.js'
 
 /* ---------------------------------------------------------------- 捕获模块 */
 
@@ -506,6 +507,105 @@ if (saveCall) {
     eq(value.proactive?.duringSleep, true, 'proactive.duringSleep')
     eq(value.proactive?.duringSleepPromises, false, 'proactive.duringSleepPromises')
   })
+}
+
+/* ─────────────── 系统性核查：schema 字段是否都上了面板 ─────────────── */
+
+if (saveCall) {
+  const value = saveCall.payload?.value ?? saveCall.payload
+  /** 递归收集 schema 的叶子字段路径。 */
+  const schemaLeaves = (schema, prefix, out) => {
+    const dict = schema?.dict
+    if (!dict) return
+    for (const [key, child] of Object.entries(dict)) {
+      const path = prefix ? `${prefix}.${key}` : key
+      if (child?.dict) schemaLeaves(child, path, out)
+      else out.push(path)
+    }
+  }
+  /** 递归收集 payload 对象里的叶子路径（数组按叶子算）。 */
+  const payloadLeaves = (node, prefix, out) => {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) { if (prefix) out.add(prefix); return }
+    const keys = Object.keys(node)
+    if (!keys.length) { if (prefix) out.add(prefix); return }
+    for (const key of keys) payloadLeaves(node[key], prefix ? `${prefix}.${key}` : key, out)
+  }
+  const schemaPaths = []
+  schemaLeaves(ConfigSchema, '', schemaPaths)
+  const payloadPaths = new Set()
+  payloadLeaves(value, '', payloadPaths)
+
+  /*
+   * 未上界面的字段**必须显式登记**。
+   *
+   * 为什么要有这张表：面板是手写字段清单，新字段很容易只进 schema 与逻辑、
+   * 忘了上面板——那种缺口**不报错**，只是用户在界面上找不到它
+   * （本轮就是这样发现批 3 的三个节奏旋钮漏了）。有了这张表，
+   * ① 每个缺口都有人写下的理由；② 新缺口会让测试变红，不会悄悄累积。
+   *
+   * 前缀写法：`im.worldSeeder.` 表示该前缀下所有字段。
+   */
+  const NOT_EXPOSED = {
+    // 宿主层开关：由 DSH 的插件启停承担，插件面板不再重复给一个开关。
+    'enabled': '由宿主插件启停承担',
+    // 旧字段名/内部机制：面板只暴露当前规范名，避免同时出现两个同名开关。
+    'im.logLevel': '旧别名，面板用顶层 logLevel',
+    'im.worldSeeder.': '旧嵌套别名，面板用顶层 worldSeeder',
+    'im.botId_legacy': '旧字段名，面板用 im.bots',
+    'im.targetId': '旧单目标字段，面板用 im.bots',
+    // 集成细节：改了只会把通道弄坏，不是用户该调的旋钮。
+    'im.sayTool': '工具名内部约定',
+    'im.imageTool': '工具名内部约定',
+    'im.exposeService': '兼容出口开关（默认不占用该服务名）',
+    'im.migrateLegacyBindings': '一次性迁移开关',
+    'im.autoDiscover': '自动发现机制内部',
+    'im.botCommands': 'Bot 命令开关内部',
+    'im.markdownSupport': '平台能力探测结果',
+    'im.waitForTurnMs': '回合等待超时内部',
+    'im.timeoutMs': '投递超时内部',
+    'im.keepPassive': '被动回复窗口内部',
+    'im.dedupe.': '去重窗口容量内部',
+    'im.autoCreateSession': '标准功能（默认开），描述里已注明改 yaml',
+    // 更多旧嵌套别名：面板暴露的是顶层规范名或新名，避免出现两个同名开关。
+    'im.group.enabled': '旧嵌套别名，面板用顶层群聊开关',
+    'im.specialization.mode': '旧嵌套别名，面板用顶层 specialization',
+    'im.specialization.modelProbe': '旧嵌套别名，面板用顶层 specialization',
+    'im.chunking.enabled': '旧别名，面板用 im.chunking.splitReplyMessages',
+    // 高级调参：默认值已经调好，暴露出来只会让人误调；需要时改 yaml。
+    'agency.': '高级调参（沿用默认）',
+    'alterSystem.': '高级调参（沿用默认）',
+    'schedulePreplan.': '高级调参（沿用默认）',
+    'urge.advanced.': '高级调参（沿用默认）',
+    'urge.frequency': '高级调参（沿用默认）',
+    'urge.proactiveWillingnessThreshold': '高级调参（沿用默认）',
+    // 冲突键：world 是同一个键，schema 的 union 只接受字符串或对象其一，
+    // 面板按规范的对象形态读写。
+    'story.world': '与对象形态同键，面板按对象读写',
+    // 尚未接线的上游同名项：留着是为了与上游配置对齐，进来之前不该给用户一个假开关。
+    'story.storyTimezone': '上游同名项，本仓统一用顶层 timeZone（尚未接线）',
+    'runtime.userMessageDebounceSeconds': '本版本不生效：连输入的合并由 DSH 宿主处理',
+  }
+  const isAllowed = (path) => Object.keys(NOT_EXPOSED).some((key) => (
+    key.endsWith('.') ? path.startsWith(key) : path === key
+  ))
+
+  // 待暴露项：确实该给用户、但还没做的，登记在此，下一轮补。
+  // 目前为空——本轮把这批全补上了；留着这个机制是为了下次再发现缺口时有地方放。
+  const PENDING = new Set([])
+  const isPending = (path) => PENDING.has(path)
+
+  const uncovered = schemaPaths.filter(p => !payloadPaths.has(p))
+  const unexpected = uncovered.filter(p => !isAllowed(p) && !isPending(p))
+
+  check('schema 字段要么上了面板、要么在「未暴露」清单里（防前端缺口悄悄累积）', () => {
+    eq(unexpected, [], `以下 schema 字段既没上面板、也没登记理由：${JSON.stringify(unexpected)}`)
+  })
+  check('「待暴露」清单是真实存在的缺口（补完后本项会提醒你删掉登记）', () => {
+    const stale = [...PENDING].filter(p => payloadPaths.has(p))
+    eq(stale, [], `这些已经上了面板，应从待暴露清单移除：${JSON.stringify(stale)}`)
+  })
+  console.log(`\n[核对] schema 叶子 ${schemaPaths.length}；已上界面 ${schemaPaths.length - uncovered.length}；`
+    + `未暴露 ${uncovered.filter(isAllowed).length}（已登记理由）；待暴露 ${uncovered.filter(isPending).length}`)
 }
 
 console.log(`\n配置面板覆盖度：通过 ${passed} 项，失败 ${failed} 项`)
