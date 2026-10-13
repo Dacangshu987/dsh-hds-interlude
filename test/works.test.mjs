@@ -24,7 +24,7 @@ import {
   decodeWorkRow, pruneTerminalProposals, pruneTerminalJobs, pruneRevisions,
   splitDumpParts, WORK_INSTRUCTION, ASYNC_WORK_INSTRUCTION,
   createWorkState, proposeWorkEdit, resolveWorkProposal, recordWorkFailure, workContextProjection,
-  normalizeWorkState, renderWorkProjection,
+  normalizeWorkState, renderWorkProjection, workOperationKey,
 } from '../lib/works.js'
 
 let passed = 0
@@ -458,6 +458,35 @@ check('renderWorkProjection：说明「现在是什么」，并压住三种越�
   // 坏输入。
   eq(renderWorkProjection(undefined), undefined, '无作品 → undefined')
   eq(renderWorkProjection(null), undefined, 'null → undefined')
+})
+
+check('workOperationKey：内容哈希做幂等键（重试不刷重复提案，改一个字就是新提案）', () => {
+  const a = workOperationKey('head1', '正文', '理由')
+  eq(workOperationKey('head1', '正文', '理由'), a, '相同内容 → 同键（重试复用）')
+  assert.notEqual(workOperationKey('head1', '正文改一个字', '理由'), a, '改正文 → 新键')
+  assert.notEqual(workOperationKey('head1', '正文', '换个理由'), a, '改理由 → 新键')
+  // 基于**不同版本**的相同文字是两件事，不该互相吞掉。
+  assert.notEqual(workOperationKey('head2', '正文', '理由'), a, '换基础版本 → 新键')
+  // 与 workKey 一样用 JSON 数组而不是拼接，避免歧义。
+  assert.notEqual(workOperationKey('a', 'bc', ''), workOperationKey('ab', 'c', ''), '拼接歧义不撞键')
+  assert.ok(a.startsWith('work:'), '带前缀便于排查')
+  // 坏输入不抛错。
+  eq(typeof workOperationKey(undefined, undefined, undefined), 'string', '坏输入也返回字符串')
+})
+
+check('workOperationKey 与 proposeWorkEdit 配合：同一操作键只产生一条提案', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const key = workOperationKey(state.head, '改后', '想加一句')
+  const first = proposeWorkEdit(state, {
+    input: { baseRevisionId: state.head, content: '改后', reason: '想加一句' }, operationKey: key, newId,
+  })
+  const retry = proposeWorkEdit(first.state, {
+    input: { baseRevisionId: state.head, content: '改后', reason: '想加一句' }, operationKey: key, newId,
+  })
+  eq(first.reused, false, '第一次是新建')
+  eq(retry.reused, true, '重试复用')
+  eq(retry.state.proposals.length, 1, '只有一条提案')
 })
 
 console.log(`\n共同作品：通过 ${passed} 项，失败 ${failed} 项`)
