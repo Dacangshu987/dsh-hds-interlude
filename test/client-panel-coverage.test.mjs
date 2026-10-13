@@ -246,6 +246,10 @@ const state = {
       memoryLimit: 12,
       repetitionGuard: false,
       restWindows: [{ enabled: true, label: 'night', start: '22:30', end: '06:30', minIntervalMinutes: 90, maxIntervalMinutes: 180 }],
+      // 节奏旋钮（对齐上游 rc50）：刻意用非默认值。
+      conversationFollowUpMinutes: [5, 15],
+      conversationFollowUpJitterMinutes: 3,
+      minimumAdvanceMinutes: 45,
     },
     proactive: { duringSleep: true, duringSleepPromises: false },
   },
@@ -333,6 +337,14 @@ check('聊天页有表情清单两个上限，且读回配置里的值（Sticker
   eq(inputs.length, 2, '应当是「条数 + 体积」两个输入')
   eq(Number(inputs[0].props.value), 25, 'catalogLimit')
   eq(Number(inputs[1].props.value), 7, 'maxFileSizeMB')
+})
+
+check('节奏页有对话后续补写与手动推进下限，且读回配置里的值（rc50）', () => {
+  const rhythm = goTab('节奏')
+  // 三个字段此前**只在 schema 与逻辑里生效，没上面板**——用户在界面上配不了。
+  eq(controlNearLabel(rhythm, '对话后续补写').props.value, '5, 15', '分钟列表按逗号分隔读回')
+  eq(Number(controlNearLabel(rhythm, '补写时间随机浮动').props.value), 3, 'jitter')
+  eq(Number(controlNearLabel(rhythm, '手动推进下限').props.value), 45, 'minimumAdvanceMinutes')
 })
 
 check('聊天页有原生表情结构化通道，且读回配置里的值（ChatActions 段）', () => {
@@ -434,6 +446,8 @@ current = await setValue(controlNearLabel(goTab('扩展'), '主体叙事提示�
 current = await setValue(controlNearLabel(current, '文风（stylePrompt）'), '新的文风')
 // 创作页：把 perspectives 清空（验「送空数组」，否则深合并会把旧条目留下）
 current = await setValue(controlNearLabel(goTab('创作'), '价值观·多条独立条目'), '')
+// 节奏页：把对话后续补写列表清空（同样要送 []，= 关闭该回路）
+current = await setValue(controlNearLabel(goTab('节奏'), '对话后续补写'), '')
 
 const saveBtn = buttonByText(current ?? view.get(), '保存')
 check('找到保存按钮', () => { assert.ok(saveBtn, '没有保存按钮') })
@@ -456,6 +470,10 @@ if (saveCall) {
     eq(value.story?.perspectives, [], 'story.perspectives 清空后应送 []')
     // 没动过的那个照旧带上。
     eq(value.story?.supplementaryFacts, ['她怕黑', '左耳有点背'], 'story.supplementaryFacts')
+    // 节奏：清空的补写列表也送 []（= 关闭该回路），没动的两项保持原值。
+    eq(value.runtime?.conversationFollowUpMinutes, [], 'runtime.conversationFollowUpMinutes 清空后应送 []')
+    eq(value.runtime?.conversationFollowUpJitterMinutes, 3, '未被漏写')
+    eq(value.runtime?.minimumAdvanceMinutes, 45, '未被漏写')
   })
   check('未改动的相关字段仍在（没有被面板漏写而丢失）', () => {
     eq(value.im?.forwardLimits?.maxDepth, 1, 'im.forwardLimits.maxDepth')
