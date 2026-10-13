@@ -258,6 +258,8 @@ const state = {
     // 日志内容脱敏（对齐上游 Logging 段）：两个隐私开关**刻意打开**非默认值，
     // 这样面板读错（比如默认成 false）就会露馅。
     logging: { verbosity: 'diagnostic', logScriptPreview: true, logMessageContent: true, previewLength: 1200 },
+    // 失明模式（对齐上游 BlindMode）：刻意用非默认值（关卡 + 非默认间隔）。
+    blindMode: { enabled: true, healthReportMinutes: 25 },
   },
 }
 const { fetchImpl, calls } = makeFetch(state)
@@ -408,6 +410,12 @@ check('扩展页有日志内容脱敏两项（对齐上游 Logging），且读�
   eq(checkboxNear(advanced, '日志里带用户消息与角色可见消息内容').props.checked, true, 'logMessageContent')
   eq(controlNearLabel(advanced, '日志里的内容预览字数').props.value, 1200, 'previewLength')
   eq(controlNearLabel(advanced, '运行信息密度').props.value, 'diagnostic', 'verbosity')
+})
+
+check('扩展页有失明模式（对齐上游 BlindMode），且读回配置值', () => {
+  // 夹具里 enabled: true → 复选框勾上，且条件渲染出心跳间隔。
+  eq(checkboxNear(advanced, '失明模式：静默日志与命令回执').props.checked, true, '开关读回')
+  eq(Number(controlNearLabel(advanced, '健康心跳间隔').props.value), 25, 'healthReportMinutes')
 })
 check('扩展页有世界事件播种器（rc23）并读回配置值', () => {
   const cb = checkboxNear(advanced, '启用：低频生成与她有关的外部事件')

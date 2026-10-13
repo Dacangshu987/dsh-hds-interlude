@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 
 import {
   DEFAULT_LOGGING_CONFIG, resolveLoggingConfig, logPreview, describeWithPreview,
+  normalizeBlindMode, blindModeEnabled,
 } from '../lib/logging.js'
 
 let passed = 0
@@ -142,6 +143,39 @@ check('其余字段：合法值保留，坏值回默认', () => {
   eq(resolveLoggingConfig({ logging: { colors: false } }).colors, false, 'colors 可关')
   eq(resolveLoggingConfig({ logging: { kaomoji: false } }).kaomoji, false, 'kaomoji 可关')
   eq(resolveLoggingConfig({}).colors, true, '缺省为真')
+})
+
+/* ─────────────── D. 失明模式（沉浸运行） ─────────────── */
+
+check('失明模式：默认关，且只有**显式 true** 才开', () => {
+  eq(normalizeBlindMode({}).enabled, false, '默认关')
+  eq(blindModeEnabled({}), false, '判定默认关')
+  for (const input of [undefined, null, {}, 'nope', 42]) {
+    eq(blindModeEnabled(input), false, `${JSON.stringify(input)} 应判为关`)
+  }
+  eq(blindModeEnabled({ blindMode: { enabled: true } }), true, '新名开启')
+  // 真值但不是 true 的写法不算开——这是「静默一切」的开关，不能误开。
+  for (const bad of ['true', 1, 'yes', {}]) {
+    eq(blindModeEnabled({ blindMode: { enabled: bad } }), false, `${JSON.stringify(bad)} 不该算开`)
+  }
+})
+
+check('失明模式：旧名 blackBox 任一为 true 即启用（上游兼容读旧配置）', () => {
+  eq(blindModeEnabled({ blackBox: true }), true, '只写旧名也算开')
+  eq(blindModeEnabled({ blindMode: { enabled: true }, blackBox: false }), true, '只写新名也算开')
+  eq(blindModeEnabled({ blindMode: { enabled: true }, blackBox: true }), true, '都写')
+  eq(blindModeEnabled({ blackBox: false }), false, '旧名 false 不算开')
+  // 旧名同样只认显式 true。
+  eq(blindModeEnabled({ blackBox: 1 }), false, '旧名非 true 不算开')
+})
+
+check('失明模式：心跳间隔夹到 1–1440，坏值回默认 10', () => {
+  eq(normalizeBlindMode({}).healthReportMinutes, 10, '默认 10')
+  eq(normalizeBlindMode({ blindMode: { healthReportMinutes: 0 } }).healthReportMinutes, 1, '下限 1')
+  eq(normalizeBlindMode({ blindMode: { healthReportMinutes: 9999 } }).healthReportMinutes, 1440, '上限 1440')
+  eq(normalizeBlindMode({ blindMode: { healthReportMinutes: 'x' } }).healthReportMinutes, 10, '坏值回默认')
+  eq(normalizeBlindMode({ blindMode: { healthReportMinutes: 30 } }).healthReportMinutes, 30, '合法值保留')
+  eq(normalizeBlindMode(null).enabled, false, '坏输入安全')
 })
 
 console.log(`\n日志脱敏：通过 ${passed} 项，失败 ${failed} 项`)
