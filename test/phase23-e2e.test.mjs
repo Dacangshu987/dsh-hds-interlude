@@ -617,6 +617,55 @@ await check('QQ 入站唤醒把 advanceMode 拨成 speak（收到消息必须可
   await ctx.stop?.()
 })
 
+/* ───────── 共同作品：端到端（创建 → 写手产出 → 用户接受） ───────── */
+
+await check('共同作品：创建 → 写手产出待决提案 → 用户接受（作品本身在接受前不变）', async () => {
+  const { ctx, runCommand } = await boot({ events: [] })
+
+  // ① 没有作品时如实说「还没有」——不假装已经在共同写某样东西。
+  let out = await runCommand('work')
+  assert.ok(out.includes('还没有共同作品'), `未创建时应如实说：${out.slice(0, 160)}`)
+
+  // ② 用户创建（作品**只由用户建**）。
+  out = await runCommand('work create 一起写的信|第一版正文')
+  assert.ok(out.includes('已创建共同作品'), out)
+
+  // ③ 已有作品时再 create 要报错（**不覆盖旧版本**）。
+  out = await runCommand('work create 另一个|x')
+  assert.ok(out.includes('已经存在'), `不该允许第二次创建：${out}`)
+
+  // ④ 没注入执行器时 generate 如实报「需要宿主注入」，并说明其余功能不受影响。
+  out = await runCommand('work generate 写一段关于雨的')
+  assert.ok(out.includes('ctx.__workWriterExecute'), `未注入时应如实说：${out}`)
+  assert.ok(out.includes('作品本身照常可用'), '应说明其余功能不受影响')
+
+  // ⑤ 注入执行器 → 产出草稿 → 落成**待决提案**（作品本身不变）。
+  ctx.__workWriterExecute = async ({ system, user }) => {
+    assert.ok(system.includes('separate writer'), '异步写手用的提示词')
+    assert.ok(user.includes('第一版正文'), '材料里带上当前正文')
+    assert.ok(user.includes('写一段关于雨的'), '材料里带上创作意图')
+    return '写手产出的第二版'
+  }
+  out = await runCommand('work generate 写一段关于雨的')
+  assert.ok(out.includes('待决提案'), `应落成待决提案：${out}`)
+  const st = loadState(SESSION)
+  const pending = st.work.proposals.filter(p => p.status === 'pending')
+  assert.equal(pending.length, 1, `应有一条待决提案：${JSON.stringify(st.work.proposals)}`)
+  assert.equal(pending[0].content, '写手产出的第二版', '提案正文来自写手')
+  assert.equal(pending[0].author, 'protagonist', '写手产出算「她」的')
+  assert.equal(st.work.jobs[0].status, 'completed', '任务已完成')
+  assert.equal(st.work.revisions.length, 1, '**作品本身还没变**（要等用户接受）')
+
+  // ⑥ 用户接受 → head 移动、多一版。
+  out = await runCommand(`work accept ${pending[0].id}`)
+  assert.ok(out.includes('已接受'), out)
+  const after = loadState(SESSION)
+  assert.equal(after.work.revisions.length, 2, '多了一版')
+  assert.equal(after.work.head, after.work.revisions[after.work.revisions.length - 1].id, 'head 移到新版本')
+  assert.equal(after.work.revisions[1].content, '写手产出的第二版')
+  await ctx.stop?.()
+})
+
 /* ───────── 指名引用（quoteReply）的最后一跳：插件 → transport ───────── */
 
 await check('指名引用：interlude_say 的 reply_to 被解析成平台 msgId 传给投递侧', async () => {
