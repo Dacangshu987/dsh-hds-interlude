@@ -25,6 +25,7 @@ import {
   isEligibleNarrativeEntry, resolveConversationKind, resolveConversationWeight,
   calculateLongHorizonScore, shouldTriggerLongHorizon,
 } from '../lib/long-arc.js'
+import { conversationKindOfKey, draftFromEvent } from '../lib/script-entry.js'
 
 let passed = 0
 let failed = 0
@@ -222,6 +223,62 @@ check('shouldTriggerLongHorizon：坏输入安全', () => {
     { trigger: false, reason: 'not-due' },
     '非数总分当 0',
   )
+})
+
+/* ─────────────── F. 与条目录入的接线（会话来源标注） ─────────────── */
+
+check('conversationKindOfKey：只认明确的群前缀，认不出就给 unknown', () => {
+  eq(conversationKindOfKey('group:123456'), 'group', '明确的群')
+  eq(conversationKindOfKey('c2c:USER'), 'private', '明确的私聊（c2c）')
+  eq(conversationKindOfKey('session-abcdef'), 'private', 'DSH 会话 id')
+  eq(conversationKindOfKey('session_abcdef'), 'private', '下划线形态')
+  // 刻意不猜：猜错的方向不对称（把群聊当私聊 = 放大公开场合的权重）。
+  eq(conversationKindOfKey(''), 'unknown', '空')
+  eq(conversationKindOfKey('weird-key'), 'unknown', '认不出')
+  eq(conversationKindOfKey(null), 'unknown', 'null 安全')
+})
+
+check('draftFromEvent：录入时写下来源标注，未给来源时不写该键', () => {
+  const withKind = draftFromEvent(
+    { type: 'user/message', data: { content: [{ type: 'text', text: '在吗' }] } },
+    { conversationKind: 'group' },
+  )
+  eq(withKind.metadata.conversationKind, 'group', '群聊标注已写入')
+  // 不传来源时不写这个键（而不是写 'unknown'）——避免把「没标注」和
+  // 「明确判不出」混成一回事。
+  const without = draftFromEvent(
+    { type: 'user/message', data: { content: [{ type: 'text', text: '在吗' }] } },
+  )
+  eq(without.metadata, undefined, '未给来源就不写 metadata')
+})
+
+check('端到端：录入标注 → 分类 → 加权（群聊半权真的生效）', () => {
+  const cfg = DEFAULT_LONG_HORIZON_CONFIG
+  const draft = (kind, conversationKind) => draftFromEvent(
+    { type: kind === 'user-message' ? 'user/message' : 'assistant/message',
+      data: kind === 'user-message'
+        ? { content: [{ type: 'text', text: '在吗' }] }
+        : { message: { content: [{ type: 'text', text: '她抬头看了一眼' }] } } },
+    { conversationKind },
+  )
+  // 群聊会话：`script` 行若没有标注会被一律判成私聊（满权）——
+  // 这正是本轮修掉的静默坏法。
+  const groupScript = draft('script', 'group')
+  eq(resolveConversationKind(groupScript), 'group', '群聊里的 script 行判成群聊')
+  eq(resolveConversationWeight(groupScript, cfg), 0.5, '群聊半权')
+
+  const privateScript = draft('script', 'private')
+  eq(resolveConversationWeight(privateScript, cfg), 1.0, '私聊满权')
+
+  // 没标注时（旧条目 / 未接线调用方）退回按 kind 反推，行为保持可预期。
+  const unlabeled = draft('script', '')
+  eq(unlabeled.metadata, undefined, '未标注')
+  eq(resolveConversationWeight(unlabeled, cfg), 1.0, '无标注的 script 按约定算私聊')
+
+  const score = calculateLongHorizonScore([groupScript, privateScript, unlabeled], cfg)
+  eq(score.totalScore, 2.5, '0.5 + 1 + 1')
+  eq(score.groupCount, 1, '一条群聊')
+  eq(score.privateCount, 2, '两条私聊')
 })
 
 console.log(`\n长线叙事引导：通过 ${passed} 项，失败 ${failed} 项`)
