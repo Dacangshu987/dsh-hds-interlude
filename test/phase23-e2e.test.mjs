@@ -64,12 +64,15 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
   ctx.provide('systemPrompt', { section: () => () => {} })
   ctx.provide('tools', { register: t => { registered.set(t.name, t); return () => {} } })
   ctx.provide('commands', { register: c => { registeredCommands.set(c.name, c); return () => {} } })
+  // 把**写入配置**的调用记下来：分享码导入那条链的关键契约是
+  // 「GET 只预览不写、POST 才写」，没有这个记录就断言不到任何东西。
+  const settingsUpdates = []
   ctx.provide('settings', {
     register: (ns, schema, options) => ({
       get: () => schema(options?.base ?? {}),
       watch: () => () => {},
-      update: async () => {},
-      replace: async () => {},
+      update: async (patch) => { settingsUpdates.push(patch) },
+      replace: async (patch) => { settingsUpdates.push(patch) },
     }),
   })
   // webServer 路由要**留住 handler**：状态路由是外部读取健康指标的唯一入口，
@@ -136,7 +139,7 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
       async () => ({ kind: 'enter', messages: [] }))
     return decision ? decision.messages.map(m => m.content.map(b => b.text).join('')).join('\n') : ''
   }
-  return { ctx, registered, exec, state, runPreStep, runCommand, routes, followups }
+  return { ctx, registered, exec, state, runPreStep, runCommand, routes, followups, settingsUpdates }
 }
 
 const USER_EVENT = text => ({ type: 'user/message', time: 1_700_000_000_000, data: { content: [{ type: 'text', text }] } })
@@ -614,6 +617,101 @@ await check('QQ 入站唤醒把 advanceMode 拨成 speak（收到消息必须可
   const after = loadState(SESSION)
   assert.equal(after.advanceMode, 'speak', `入站唤醒后应为 speak，实际 ${after.advanceMode}`)
   assert.ok(followups.length >= 1, '应发起 followup 回合（否则模型不会跑）')
+  await ctx.stop?.()
+})
+
+/* ───────── 分享码导入：预览只读，应用才写（且连接字段进不来） ───────── */
+
+await check('分享码导入：GET 只预览不写配置；POST 才应用；连接类字段进不来', async () => {
+  // 这是一条会**把外部数据写进用户配置**的路径，所以要端到端钉三件事：
+  //   ① GET 绝不写配置（用户必须先看清楚会改什么）；
+  //   ② POST 才应用，且**只应用白名单分区**；
+  //   ③ 连接类字段（apiKey / endpoint / appId…）在插件侧被深度剔除。
+  const { ctx, routes, settingsUpdates } = await boot({ events: [] })
+  // 注入离线拉取（生产里不注入，走 safe-fetch 的 SSRF 防护）。
+  ctx.__shareFetch = async (url) => {
+    assert.ok(url.endsWith('/api/share/7G2M9QRS'), `分享码要规范化后拼进 URL：${url}`)
+    return {
+      status: 200,
+      body: {
+        code: '7G2M9QRS',
+        revision: 7,
+        title: '安静的预设',
+        type: 'private',
+        slug: 'quiet',
+        nsfw: false,
+        author: { id: 3, name: '某人' },
+        hdsi_version: '1.0.1-rc50',
+        sections: ['runtime', 'logging', 'im'],
+        payload: {
+          runtime: { autoAdvanceMinutes: 33, apiKey: 'SHOULD_BE_GONE' },
+          logging: { level: 'warn' },
+          // 连接类分区：不该进白名单。
+          im: { appId: '999', enabled: true },
+        },
+      },
+    }
+  }
+
+  const route = routes.get('/api/hds-interlude/preset-share')
+  assert.ok(route, '预设同步路由应已注册')
+  const call = async (method, query = '?code=7G2M9QRS') => {
+    let payload = null
+    const res = {
+      writeHead() {},
+      end(body) { payload = body ? JSON.parse(body) : null },
+    }
+    await route({ method, url: '/api/hds-interlude/preset-share' + query }, res)
+    return payload
+  }
+
+  // ① GET：只预览。
+  const before = loadState(SESSION)
+  const preview = await call('GET')
+  assert.ok(preview && preview.ok, `预览应成功：${JSON.stringify(preview)}`)
+  assert.equal(preview.value.info.code, '7G2M9QRS')
+  assert.equal(preview.value.info.revision, 7)
+  assert.ok(preview.value.lines.join('\n').includes('安静的预设'), '预览要带标题')
+  // 白名单外的分区不出现（im 被挡在外面）。
+  assert.ok(!preview.value.sections.includes('im'), `im 不该进应用范围：${JSON.stringify(preview.value.sections)}`)
+  assert.ok(preview.value.sections.includes('runtime'), 'runtime 在范围内')
+  // 连接类字段被剔除，且**如实告知**。
+  assert.ok('runtime.apiKey' in preview.value.removed.reduce((a, k) => (a[k] = 1, a), {}), `要报告剔除项：${JSON.stringify(preview.value.removed)}`)
+  assert.equal(preview.value.preview.runtime.apiKey, undefined, '预览里不该有 apiKey')
+  assert.equal(preview.value.preview.runtime.autoAdvanceMinutes, 33, '正常字段保留')
+  // 【关键】GET 只是只读预览：一次都不该写配置。
+  assert.deepEqual(settingsUpdates, [], 'GET 只读，绝不写配置')
+
+  // ② POST：应用。
+  const applied = await call('POST')
+  assert.ok(applied && applied.ok, `应用应成功：${JSON.stringify(applied)}`)
+  assert.ok(applied.value.applied.includes('runtime'), 'runtime 被应用')
+  assert.ok(!applied.value.applied.includes('im'), 'im 绝不被应用')
+
+  // ③ 写出去的补丁：只含白名单分区，且连接类字段已被剔除。
+  assert.equal(settingsUpdates.length, 1, `POST 应当只写一次配置，实际 ${settingsUpdates.length} 次`)
+  const patch = settingsUpdates[0]
+  assert.ok(patch.runtime, '补丁里有 runtime')
+  assert.equal(patch.runtime.autoAdvanceMinutes, 33, '远端值写进去了')
+  assert.equal(patch.runtime.apiKey, undefined, '**apiKey 绝不能写进配置**')
+  assert.equal(patch.im, undefined, '**im 整段绝不能写进配置**')
+  assert.equal(patch.logging.level, 'warn', 'logging 一起写入')
+
+  // ④ 坏码：本地就能判定，不该发请求。
+  let fetchCalls = 0
+  const origFetch = ctx.__shareFetch
+  ctx.__shareFetch = async () => { fetchCalls += 1; return { status: 200, body: {} } }
+  const bad = await call('GET', '?code=bad!code')
+  assert.ok(bad && bad.ok === false, '坏码应报错')
+  assert.match(String(bad.error), /分享码格式不正确/)
+  assert.equal(fetchCalls, 0, '坏码不该发请求')
+  ctx.__shareFetch = origFetch
+
+  // ⑤ 404 的话术能指导用户行动。
+  ctx.__shareFetch = async () => ({ status: 404, body: {} })
+  const gone = await call('GET')
+  assert.ok(gone && gone.ok === false, '404 应报错')
+  assert.match(String(gone.error), /不存在、已过期或不可用/, `404 话术：${gone.error}`)
   await ctx.stop?.()
 })
 
