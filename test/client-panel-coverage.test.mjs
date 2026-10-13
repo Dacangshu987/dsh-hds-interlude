@@ -709,5 +709,22 @@ check('默认展开白名单的键**必须都是面板里真实存在的区 key*
   assert.deepEqual(unlisted, [], `这些区没在白名单里登记开合默认值：${JSON.stringify(unlisted)}`)
 })
 
+check('前端不再有裸 `r.json()`：一律走 readJson（响应非 JSON 时给人话）', () => {
+  // 为什么是硬约束：DSH 的插件后端**启动时加载**，前端每次刷新都拿最新的。
+  // 于是「新面板 + 旧后端」是常态中间态——面板调一条后端还不认识的路由，
+  // 宿主返回纯文本 `not found`，裸 `r.json()` 就抛
+  //   Unexpected token 'o', "not found" is not valid JSON
+  // 用户看到的是一句毫无线索的英文。扫码那条链早踩过、写了局部兜底，
+  // 但只兜了它自己那一处；上一轮把它提成通用件 readJson 并全线换用。
+  // 这条不变量防止有人再写回裸调用。
+  const src = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const bare = [...src.matchAll(/\.then\(function \(r\) \{ return r\.json\(\) \}\)/g)]
+  assert.deepEqual(bare.map(m => m.index), [], `还有 ${bare.length} 处裸 r.json()，应改用 readJson`)
+  assert.ok(src.includes('function readJson('), '应存在 readJson 通用兜底')
+  // 兜底文案要能指导用户行动（重启 DSH），而不是只说「失败」。
+  assert.ok(src.includes('插件后端可能还在跑旧代码'), '兜底文案要指出「后端可能是旧代码」')
+  assert.ok(src.includes('请重启 DSH 后重试'), '兜底文案要给出可执行的下一步')
+})
+
 console.log(`\n配置面板覆盖度：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)
