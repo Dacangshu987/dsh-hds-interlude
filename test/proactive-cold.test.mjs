@@ -1230,6 +1230,9 @@ await check('发消息间隔没到 → 台词攒着不发（间隔是「发消�
   const sessionId = 'session-live-aa-interval'
   const host = await bootLiveAutoAdvance({
     sessionId,
+    // 必须有**工具申报的台词**：否则新契约下无论如何都不会发，
+    // 这条用例就永远变不红——它声称在测「间隔闸」，实际什么都没测到。
+    speech: '在忙吗',
     // 上次自动消息就在 10 分钟前，而发消息间隔是 120 分钟。
     statePatch: { lastAutoMessageAt: Date.now() - 10 * 60_000 },
     pluginConfig: { im: { enabled: true, appId: 'test-app', messageIntervalMinutes: 120 } },

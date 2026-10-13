@@ -1,153 +1,111 @@
 /**
- * 验证「故事不发、只有台词才发」这组用例是**承重**的。
+ * 验证「故事不发、只有角色说的话才发」这组用例是**承重**的。
  *
- * 手法：把 lib/index.js 改回改版前的行为——角色写什么就整段投出去——
- * 跑 proactive-cold.test.mjs 与 story.test.mjs，看用例是否变红。
+ * ## 为什么必要
  *
- * 这一层为什么必要：这段代码的坏法**不抛错、不写日志、turn/end 照常 completed**。
- * 角色照样在说话，只有聊天软件那头的内容不对——要么多了一条没头没尾的旁白，
- * 要么少了一句该说的话。没有承重验证，一次「顺手改回去」不会被任何人发现。
+ * 这段代码的坏法**不抛错、不写日志、turn/end 照常 completed**：角色照样在说话，
+ * 只有聊天软件那头的内容不对——要么多了一条没头没尾的旁白，要么少了一句该说的话。
+ * 没有承重验证，一次「顺手改回去」不会被任何人发现。
+ *
+ * ## 手法
+ *
+ * 在**沙箱副本**里注入 buggy 版本，跑用例看它们是否变红。
+ * 真实源码全程只读（理由见 test/_loadbearing-sandbox.mjs）。
+ *
+ * ## 与前一版的差别（2026-10-13 重写）
+ *
+ * 前一版有四个场景，其中三个围绕「**从正文提取台词**」——而那条通路已按上游口径
+ * **删除**（`decideAdvanceDelivery` 不再读正文，`salvageBodySpeech` 也已移除）。
+ * 围绕已删除机制做的承重验证是**假验证**：锚点找不到就报「结构已变」，
+ * 但就算找到了，它验证的也是一种不可能再发生的坏法。
+ *
+ * 重写后只保留两个**仍然成立**的场景，且都直接对应线上事故形态：
+ *   ① 让自动推进把**正文**当消息投递（2026-10-12 事故的形态）
+ *   ② 让发消息间隔失效（「每 40 分钟一条无端消息」的形态）
+ *
+ * 自言自语那道闸由 `verify-self-narration-loadbearing.mjs` 单独负责。
  *
  * 用法：node test/verify-story-split-loadbearing.mjs
  */
-import fs from 'node:fs'
 import { createSandbox } from './_loadbearing-sandbox.mjs'
 
-/**
- * 注入与运行都在**沙箱副本**里做，真实源码全程只读。
- * 理由见 test/_loadbearing-sandbox.mjs 的模块注释（就地改写扛不住 SIGKILL）。
- */
 const sandbox = createSandbox()
 const originalIndex = sandbox.read('lib/index.js')
-const originalStory = sandbox.read('lib/story.js')
 
 /** 跑一个测试文件，返回红掉的用例行。 */
 const runTests = (file) => sandbox.run(file)
 
-/** 改版前的行为：整段写回直接投递（不问有没有台词、不带图）。 */
-function makeSendWholeStoryIndex(src) {
-  // 锚点跟着实现走：投递现在按「有没有图」在 items / text 之间选，所以固定的
-  // 整段字符串不再是稳定锚点。这里改成「定位那次 deliverToIm 调用、整段替换」，
-  // 注入的 buggy 版本仍然表达「整段原样投递」这个旧行为。
-  const startMarker = '    const delivered = await deliverToIm({\n      key, state, cfg,'
-  const start = src.indexOf(startMarker)
-  if (start < 0) return null
-  const end = src.indexOf('\n    })', start)
-  if (end < 0) return null
-  const buggy = "    const delivered = await deliverToIm({\n      key, state, cfg, text: written, reason: '自动生活推进',\n    })"
-  return src.slice(0, start) + buggy + src.slice(end + '\n    })'.length)
+/*
+ * 锚点一律用**正则**并容忍 CRLF：本仓源码是 CRLF 行尾，写死 `\n` 会匹配不上
+ * （踩过：报「结构已变」，其实是行尾不同）。匹配不上时如实报错而不是静默跳过。
+ */
+
+/** 场景一：把**正文**当成要发出去的内容（2026-10-12 事故的形态）。 */
+function makeSendBodyIndex(src) {
+  // 自动推进那次投递：正常走 decision.messages（只含工具申报的台词），
+  // 这里改成整段正文。
+  const re = /(\.\.\.\(orderedWithImages \? \{ items: orderedWithImages \} : \{ text: )decision\.messages\.join\('\\n'\)( \}\),)/
+  if (!re.test(src)) return null
+  return src.replace(re, "$1written$2")
 }
 
-/** 只把「间隔」这一关拆掉：让它每次都发。 */
+/**
+ * 场景二：让「发消息间隔」这一关失效（每轮有话就发）。
+ *
+ * **两处都要拆**才算真的不管间隔：唤起前的预判（`storyMessageGate`），
+ * 以及写完之后那道复核（`decideAdvanceDelivery`）。只拆一处，另一处仍会把消息拦住，
+ * 于是场景二**假绿**——踩过。
+ *
+ * 复核这处的锚点还必须**带上前一行 `lastMessageAt`**：
+ * `messageIntervalMinutes: cfg.im?...` 这个片段在 index.js 里出现**两次**
+ * （另一处是设置页状态卡片，改了不影响投递），只按片段替换会命中错的那一处。
+ */
 function makeIgnoreIntervalIndex(src) {
-  const marker = "    const preGating = storyMessageGate(state, cfg, now, Boolean(binding && service))"
-  if (!src.includes(marker)) return null
-  return src.replace(marker, "    const preGating = { allowed: true, reason: 'speak' }")
-}
-
-/**
- * 同样只拆间隔，但拆的是「写完之后那道复核」。
- *
- * 锚点必须带上前面那行 lastMessageAt —— 光看 messageIntervalMinutes 会先命中
- * 设置页状态卡片里的同名读取（那里改了不影响投递），于是场景二假绿。
- */
-function makeIgnoreIntervalInDecision(src) {
-  const marker = "      lastMessageAt: state.lastAutoMessageAt ?? 0,\n      messageIntervalMinutes: cfg.im?.messageIntervalMinutes ?? 120,"
-  if (!src.includes(marker)) return null
-  return src.replace(marker, "      lastMessageAt: state.lastAutoMessageAt ?? 0,\n      messageIntervalMinutes: 0,")
-}
-
-/** 把台词提取改成「什么都算台词」。 */
-function makeExtractEverythingStory(src) {
-  const marker = "  return out\n}\n\n/**\n * 去掉一段文字里的旁白/动作"
-  if (!src.includes(marker)) return null
-  return src.replace(marker, "  out.push(text.trim())\n  return out\n}\n\n/**\n * 去掉一段文字里的旁白/动作")
-}
-
-/**
- * 拆掉「自言自语闸」——即 decideAdvanceDelivery 开头那段拦下自说自话的判定。
- *
- * 拆掉之后，思考里用引号写的「候选台词」又会被 extractSpeech 挑出来发出去，
- * 这正是 2026-09-15 第二次线上泄漏的形态。
- */
-function makeDropSelfNarrationGate(src) {
-  const marker = "  if (looksLikeSelfNarration(text).leak && advanceEnabled) {\n    return { mode: 'story-only', messages: [], reason: 'self-narration', lines: 0 }\n  }"
-  if (!src.includes(marker)) return null
-  return src.replace(marker, '')
+  const pre = /const preGating = storyMessageGate\(state, cfg, now, Boolean\(binding && service\)\)/
+  if (!pre.test(src)) return null
+  const withPre = src.replace(pre, "const preGating = { allowed: true, reason: 'speak' }")
+  const re = /( {6}lastMessageAt: state\.lastAutoMessageAt \?\? 0,\r?\n {6}messageIntervalMinutes: )cfg\.im\?\.messageIntervalMinutes \?\? 120(,)/
+  if (!re.test(withPre)) return null
+  return withPre.replace(re, '$10$2')
 }
 
 let ok = true
 
 try {
-  // ── 场景一：整段写回直投（改版前的行为）─────────────────────────
-  const whole = makeSendWholeStoryIndex(originalIndex)
-  if (!whole) {
-    console.error('无法生成「整段投递」版本（结构已变），承重验证需要更新')
+  // ── 场景一：正文当消息投递 ─────────────────────────────────────
+  const sendBody = makeSendBodyIndex(originalIndex)
+  if (!sendBody) {
+    console.error('无法注入「正文当消息投递」（结构已变），承重验证需要更新')
     process.exit(2)
   }
-  sandbox.write('lib/index.js', whole)
-  console.log('场景一：把续写改成「写什么就整段发出去」…\n')
+  sandbox.write('lib/index.js', sendBody)
+  console.log('场景一：让自动推进把**正文**当消息投递…\n')
   const redsOne = runTests('test/proactive-cold.test.mjs').concat(runTests('test/story.test.mjs'))
   for (const line of redsOne) console.log('  ' + line)
+  // 必须有用例真的红掉——否则说明没有测试在管这件事。
   const onePass = redsOne.length >= 1
   console.log(`  → 红掉 ${redsOne.length} 条`)
   if (!onePass) ok = false
 
-  // ── 场景二：无视发消息间隔 ────────────────────────────────────
-  // 两处都要拆才算「真的不管间隔」：唤起前的预判，以及写完之后那道复核
-  // （复核用的就是同一个纯函数）。只拆一处，另一处仍会把消息拦住。
+  // ── 场景二：无视发消息间隔 ─────────────────────────────────────
   sandbox.write('lib/index.js', originalIndex)
-  let noInterval = makeIgnoreIntervalIndex(originalIndex)
-  if (noInterval) noInterval = makeIgnoreIntervalInDecision(noInterval)
+  const noInterval = makeIgnoreIntervalIndex(originalIndex)
   if (!noInterval) {
-    console.error('无法还原间隔门（结构已变），承重验证需要更新')
+    console.error('无法让间隔失效（结构已变），承重验证需要更新')
     process.exit(2)
   }
   sandbox.write('lib/index.js', noInterval)
-  console.log('\n场景二：把「发消息间隔」这一关拆掉（每轮有话就发）…\n')
-  const redsTwo = runTests('test/proactive-cold.test.mjs')
+  console.log('\n场景二：让「发消息间隔」失效（每轮有话就发）…\n')
+  const redsTwo = runTests('test/proactive-cold.test.mjs').concat(runTests('test/story.test.mjs'))
   for (const line of redsTwo) console.log('  ' + line)
-  const twoPass = redsTwo.some(line => line.includes('发消息间隔没到'))
+  const twoPass = redsTwo.some(line => line.includes('发消息间隔'))
   console.log(`  → 红掉 ${redsTwo.length} 条`)
   if (!twoPass) ok = false
-
-  // ── 场景三：台词提取退化成「什么都算台词」───────────────────────
-  sandbox.write('lib/index.js', originalIndex)
-  const loose = makeExtractEverythingStory(originalStory)
-  if (!loose) {
-    console.error('无法还原提取器（结构已变），承重验证需要更新')
-    process.exit(2)
-  }
-  sandbox.write('lib/story.js', loose)
-  console.log('\n场景三：让「旁白也算台词」…\n')
-  const redsThree = runTests('test/story.test.mjs').concat(runTests('test/proactive-cold.test.mjs'))
-  for (const line of redsThree) console.log('  ' + line)
-  const threePass = redsThree.length >= 2
-  console.log(`  → 红掉 ${redsThree.length} 条`)
-  if (!threePass) ok = false
-
-  // ── 场景四：拆掉自言自语闸（2026-09-15 第二次泄漏的那道缺口）──────
-  // 这道闸让「思考里的候选台词」不再被当成真台词发出去。拆掉它，
-  // 那两条回归用例必须变红——否则这层保护就是摆设。
-  sandbox.write('lib/story.js', originalStory)
-  const noGate = makeDropSelfNarrationGate(originalStory)
-  if (!noGate) {
-    console.error('无法拆掉自言自语闸（结构已变），承重验证需要更新')
-    process.exit(2)
-  }
-  sandbox.write('lib/story.js', noGate)
-  console.log('\n场景四：拆掉「自言自语闸」（让思考里的候选台词照发）…\n')
-  const redsFour = runTests('test/story.test.mjs').concat(runTests('test/proactive-cold.test.mjs'))
-  for (const line of redsFour) console.log('  ' + line)
-  const fourPass = redsFour.some(line => line.includes('候选台词'))
-  console.log(`  → 红掉 ${redsFour.length} 条`)
-  if (!fourPass) ok = false
 
   console.log('')
   console.log(ok
     ? '✅ 测试确实在检验「故事只留在 DSH，只有角色说的话才发出去」'
     : '❌ 测试是摆设')
-  sandbox.cleanup()
   process.exit(ok ? 0 : 1)
 } finally {
   sandbox.cleanup()

@@ -79,9 +79,14 @@ function makeDefaultOffSchema(src) {
  *
  * 这一处与投递无关，但它是**投递打开之后才出现**的新风险：生活推进开始占名额，
  * 于是排在它后面的到点提醒可能被挤掉。没有承重验证，没人会发现这层耦合。
+ *
+ * 锚点说明（2026-10-13 更新）：rc25 的「`maxPerDay: 0` = 不限」把这一行改成了
+ * 现在这个形状（多了 `!quotaUnlimited(cfg)` 与 `proactiveMaxPerDay(cfg)`）。
+ * 文本锚点会随代码演进失效——失效时这里会**如实报错并以 exit 2 结束**，
+ * 而不是假装验证通过（这是刻意的：宁可吵，也不要让承重验证静默变成摆设）。
  */
-const FIXED_QUOTA = 'if (!promised && (state.reachedOut ?? 0) >= (cfg.proactive?.maxPerDay ?? 6)) return false'
-const OLD_QUOTA = 'if ((state.reachedOut ?? 0) >= (cfg.proactive?.maxPerDay ?? 6)) return false'
+const FIXED_QUOTA = 'if (!promised && !quotaUnlimited(cfg) && (state.reachedOut ?? 0) >= proactiveMaxPerDay(cfg)) return false'
+const OLD_QUOTA = 'if (!quotaUnlimited(cfg) && (state.reachedOut ?? 0) >= proactiveMaxPerDay(cfg)) return false'
 
 function makeQuotaBlockingIndex(src) {
   if (!src.includes(FIXED_QUOTA)) return null
