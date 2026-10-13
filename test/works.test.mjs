@@ -23,6 +23,7 @@ import {
   KEEP_TERMINAL, WORK_LIMITS, workKey, parseWorkEdit, parseWorkGenerationRequest,
   decodeWorkRow, pruneTerminalProposals, pruneTerminalJobs, pruneRevisions,
   splitDumpParts, WORK_INSTRUCTION, ASYNC_WORK_INSTRUCTION,
+  createWorkState, proposeWorkEdit, resolveWorkProposal, recordWorkFailure, workContextProjection,
 } from '../lib/works.js'
 
 let passed = 0
@@ -239,6 +240,167 @@ check('两段作品提示词在位，且各自的要点不丢', () => {
   assert.ok(ASYNC_WORK_INSTRUCTION.includes('No external file is sent'), '明确不发外部文件')
   // 两段是不同的口径，不能混。
   assert.notEqual(WORK_INSTRUCTION, ASYNC_WORK_INSTRUCTION)
+})
+
+/* ─────────────── G. 状态转移（对齐上游 SharedWorks） ─────────────── */
+
+/** 造一个确定性的 id 生成器（避免测试依赖 randomUUID）。 */
+const seqIds = () => { let n = 0; return () => `id-${++n}` }
+
+check('createWorkState：首版即 head，且正文/标题有界校验', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: '一起写的信', content: '第一版', newId })
+  eq(state.schemaVersion, 1)
+  eq(state.head, 'id-1', 'head 指向首版')
+  eq(state.revisions.length, 1, '只有一版')
+  eq(state.revisions[0].parentId, null, '首版没有父版本')
+  eq(state.revisions[0].content, '第一版')
+  eq(state.proposals, [], '没有提案')
+  throws(() => createWorkState({ title: '', content: 'x' }), '空标题应报错')
+  throws(() => createWorkState({ title: 't', content: '' }), '空正文应报错')
+  throws(() => createWorkState({ title: 't', content: 'x'.repeat(WORK_LIMITS.content + 1) }), '正文超长应报错')
+})
+
+check('proposeWorkEdit：operationKey 幂等（重放不刷出重复提案）', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const first = proposeWorkEdit(state, {
+    input: { baseRevisionId: state.head, content: '改一版', reason: '想加一句' },
+    operationKey: 'op-1', newId,
+  })
+  eq(first.reused, false, '第一次不是复用')
+  eq(first.proposal.status, 'pending')
+  eq(first.state.proposals.length, 1)
+  // 同一个操作键再来一次：返回**已有提案**，连 id 都不变。
+  const again = proposeWorkEdit(first.state, {
+    input: { baseRevisionId: state.head, content: '改一版', reason: '想加一句' },
+    operationKey: 'op-1', newId,
+  })
+  eq(again.reused, true, '同操作键复用')
+  eq(again.proposal.id, first.proposal.id, '返回同一提案')
+  eq(again.state.proposals.length, 1, '不会多出一条')
+  // 没有 operationKey 时不幂等（各自成一条）。
+  const noKey = proposeWorkEdit(first.state, {
+    input: { baseRevisionId: state.head, content: '另一版', reason: 'x' }, newId,
+  })
+  eq(noKey.reused, false)
+  eq(noKey.state.proposals.length, 2)
+})
+
+check('proposeWorkEdit：基础版本不等于 head 时拒绝（不许基于旧版本改）', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  throws(
+    () => proposeWorkEdit(state, { input: { baseRevisionId: 'nope', content: 'x', reason: 'y' }, newId }),
+    '基础版本不是 head 应报错',
+  )
+})
+
+check('proposeWorkEdit：不改入参（纯函数），新提案清掉 lastFailure', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const withFailure = { ...state, lastFailure: { sourceEntryId: 7, status: 'proposal-not-saved' } }
+  const frozen = JSON.parse(JSON.stringify(withFailure))
+  const out = proposeWorkEdit(withFailure, { input: { baseRevisionId: state.head, content: 'x', reason: 'y' }, newId })
+  eq(withFailure, frozen, '入参不该被改动')
+  eq(out.state.lastFailure, undefined, '新提案入列即清掉上次失败痕迹')
+})
+
+check('resolveWorkProposal：接受写入新修订并移动 head；驳回只改状态', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const p = proposeWorkEdit(state, { input: { baseRevisionId: state.head, content: '改后', reason: 'r' }, newId }).state
+  const accepted = resolveWorkProposal(p, { id: p.proposals[0].id, accept: true, newId })
+  eq(accepted.changed, true, '有变化')
+  eq(accepted.state.revisions.length, 2, '多一版')
+  eq(accepted.state.head, accepted.state.revisions[1].id, 'head 移到新版本')
+  eq(accepted.state.revisions[1].parentId, state.head, '父版本指向旧 head')
+  eq(accepted.state.revisions[1].content, '改后', '正文来自提案')
+  eq(accepted.proposal.status, 'accepted')
+  // 驳回：不写修订。
+  const p2 = proposeWorkEdit(accepted.state, { input: { baseRevisionId: accepted.state.head, content: '再改', reason: 'r' }, newId }).state
+  const rejected = resolveWorkProposal(p2, { id: p2.proposals[1].id, accept: false, newId })
+  eq(rejected.state.revisions.length, 2, '驳回不写修订')
+  eq(rejected.state.head, accepted.state.head, 'head 不动')
+  eq(rejected.proposal.status, 'rejected')
+})
+
+check('resolveWorkProposal：同结论幂等；已决不可改判', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const p = proposeWorkEdit(state, { input: { baseRevisionId: state.head, content: 'x', reason: 'r' }, newId }).state
+  const id = p.proposals[0].id
+  const accepted = resolveWorkProposal(p, { id, accept: true, newId })
+  // 同结论幂等：不改版本、不报错，且返回**同一份状态引用**（真的什么都没动）。
+  const again = resolveWorkProposal(accepted.state, { id, accept: true, newId })
+  eq(again.changed, false, '同结论幂等')
+  assert.equal(again.state, accepted.state, '返回同一份状态引用（未改动）')
+  // 改判：报错。
+  throws(() => resolveWorkProposal(accepted.state, { id, accept: false, newId }), '已决不可改判')
+  // 不存在的提案：报错。
+  throws(() => resolveWorkProposal(accepted.state, { id: 'nope', accept: true, newId }), '提案不存在应报错')
+})
+
+check('resolveWorkProposal：接受**基于旧版本**的提案时保留提案、不覆盖当前作品', () => {
+  // 这条最要紧：并发下它挡住「用旧提案覆盖新版本」。
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: '第一版', newId })
+  // 两个提案都基于同一个 head。
+  const first = proposeWorkEdit(state, { input: { baseRevisionId: state.head, content: 'A 版', reason: 'r' }, newId })
+  const both = proposeWorkEdit(first.state, { input: { baseRevisionId: state.head, content: 'B 版', reason: 'r' }, newId })
+  const aId = first.proposal.id
+  const bId = both.state.proposals[1].id
+  // 先接受 B：head 移动。
+  const afterB = resolveWorkProposal(both.state, { id: bId, accept: true, newId })
+  eq(afterB.state.revisions[afterB.state.revisions.length - 1].content, 'B 版')
+  // 再接受 A：A 的基础已过期 → 报错，且 A **仍是 pending**、作品仍是 B。
+  throws(() => resolveWorkProposal(afterB.state, { id: aId, accept: true, newId }), '旧基础应被拒绝')
+  eq(afterB.state.proposals.find(p => p.id === aId).status, 'pending', '提案被保留（没被吃掉）')
+  eq(afterB.state.revisions[afterB.state.revisions.length - 1].content, 'B 版', '当前作品没被覆盖')
+  eq(afterB.state.head, afterB.state.revisions[afterB.state.revisions.length - 1].id, 'head 未动')
+})
+
+check('recordWorkFailure：已有该来源的提案就不再记失败（否则诱导重试）', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const recorded = recordWorkFailure(state, 42)
+  eq(recorded.changed, true)
+  eq(recorded.state.lastFailure.sourceEntryId, 42)
+  eq(recorded.state.lastFailure.status, 'proposal-not-saved')
+  // 已有该来源的提案 → 什么都不做。
+  const withProposal = proposeWorkEdit(state, {
+    input: { baseRevisionId: state.head, content: 'x', reason: 'r' }, sourceEntryId: 42, newId,
+  }).state
+  eq(recordWorkFailure(withProposal, 42).changed, false, '已有提案就不记失败')
+  // 坏输入安全。
+  eq(recordWorkFailure(null, 1).changed, false, '坏输入')
+})
+
+check('workContextProjection：只给「现在要决定的事」，最近几条而已', () => {
+  const newId = seqIds()
+  let state = createWorkState({ title: '共同的信', content: '第一版', newId })
+  // 造 6 条提案（不同操作键）。
+  for (let i = 0; i < 6; i += 1) {
+    state = proposeWorkEdit(state, {
+      input: { baseRevisionId: state.head, content: `第${i}版`, reason: `r${i}` },
+      operationKey: `op-${i}`, newId,
+    }).state
+  }
+  const ctx = workContextProjection(state, { workId: 'w-1' })
+  eq(ctx.workId, 'w-1')
+  eq(ctx.title, '共同的信')
+  eq(ctx.content, '第一版', 'content 是当前 head 的正文')
+  eq(ctx.proposals.length, 4, '提案列表只给最近 4 条')
+  eq(ctx.pendingDraft.id, state.proposals[5].id, '待决草稿取**最后一条**')
+  eq(ctx.mayPropose, true, '没有运行中的任务 → 可以再提')
+  eq(ctx.generationMode, 'main', '缺省 main')
+  // 有任务在跑时不允许再提。
+  const running = { ...state, jobs: [{ id: 'j1', status: 'running' }] }
+  eq(workContextProjection(running).mayPropose, false, '有任务在跑 → 不可再提')
+  eq(workContextProjection(running).generationJobs.length, 1, '带上任务列表')
+  // 没有作品 / 坏输入。
+  eq(workContextProjection(null), undefined, '坏输入 → undefined')
+  eq(workContextProjection({ head: 'nope', revisions: [] }), undefined, 'head 指向不存在的修订 → undefined')
 })
 
 console.log(`\n共同作品：通过 ${passed} 项，失败 ${failed} 项`)
