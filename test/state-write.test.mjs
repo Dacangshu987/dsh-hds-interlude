@@ -318,6 +318,78 @@ await ok('对话后续补写时刻：坏类型降级为空数组，不抛错', a
   assert.deepEqual(loadState(key).conversationFollowUpAt, [])
 })
 
+/* ------------------------------------- ⑧ 长线叙事：展示字段与指导的落盘往返 */
+
+await ok('长线叙事累计器：**展示字段**也要能读回来（此前被整体重建丢掉）', async () => {
+  // 线上实测：这里曾把 `state.longHorizon` 整体重建成只剩 `lastGenerationScore`，
+  // 于是重启后状态卡与 `/interlude longarc` 上的分数、上次判定全变成「尚未评估」。
+  // 丢展示字段**不会报错**，只会让用户以为「从来没算过」——所以要钉住。
+  const key = 'k-long-horizon-roundtrip'
+  const state = emptyState()
+  state.longHorizon = {
+    lastGenerationScore: 12,
+    score: 30,
+    privateCount: 25,
+    groupCount: 10,
+    reason: 'review-due',
+    wouldTrigger: true,
+    lastDecision: 'activate',
+    lastGenerationAt: '2026-10-13T00:00:00.000Z',
+    evaluatedAt: '2026-10-13T00:00:01.000Z',
+  }
+  saveState(key, state)
+
+  const back = loadState(key)
+  assert.equal(back.longHorizon.lastGenerationScore, 12, '基线要留住（判定靠它）')
+  assert.equal(back.longHorizon.score, 30, '分数要留住（状态卡靠它）')
+  assert.equal(back.longHorizon.privateCount, 25, '私聊条数')
+  assert.equal(back.longHorizon.groupCount, 10, '群聊条数')
+  assert.equal(back.longHorizon.reason, 'review-due', '判定原因')
+  assert.equal(back.longHorizon.wouldTrigger, true, '该触发标记')
+  assert.equal(back.longHorizon.lastDecision, 'activate', '上次生成结论')
+  assert.equal(back.longHorizon.lastGenerationAt, '2026-10-13T00:00:00.000Z', '上次生成时刻')
+})
+
+await ok('长线叙事累计器：坏值降级而非抛错（不把脏数据带进来）', async () => {
+  const key = 'k-long-horizon-bad'
+  const state = emptyState()
+  state.longHorizon = { lastGenerationScore: 'abc', score: 'x', wouldTrigger: 'yes', extra: '不该保留' }
+  saveState(key, state)
+
+  const back = loadState(key)
+  assert.equal(back.longHorizon.lastGenerationScore, 0, '基线坏值回 0（安全方向）')
+  assert.equal(back.longHorizon.score, undefined, '坏分数不进状态')
+  assert.equal(back.longHorizon.wouldTrigger, undefined, '非 true 的标记不当真')
+  assert.equal(back.longHorizon.extra, undefined, '未知键不保留')
+})
+
+await ok('长线叙事指导：落盘往返；**形状不对就当作没有**（损坏的指导绝不注入）', async () => {
+  const key = 'k-long-horizon-guidance'
+  const state = emptyState()
+  state.longHorizonGuidance = {
+    status: 'active',
+    decision: 'activate',
+    payload: { title: '方向', currentStage: { id: 's1', name: '一' } },
+    evidenceEntryIds: [1, '2', 'x'],
+    triggerScore: 30,
+    createdAt: '2026-10-13T00:00:00.000Z',
+  }
+  saveState(key, state)
+  const back = loadState(key)
+  assert.ok(back.longHorizonGuidance, '应当读回来')
+  assert.equal(back.longHorizonGuidance.status, 'active')
+  assert.equal(back.longHorizonGuidance.payload.title, '方向', '载荷原样保留')
+  assert.deepEqual(back.longHorizonGuidance.evidenceEntryIds, [1, 2], '证据 id 清洗成整数')
+  assert.equal(back.longHorizonGuidance.triggerScore, 30)
+
+  // 没有 payload 的指导：当作「没有」而不是注入一段残缺文本。
+  const badKey = 'k-long-horizon-guidance-bad'
+  const bad = emptyState()
+  bad.longHorizonGuidance = { status: 'active' }
+  saveState(badKey, bad)
+  assert.equal(loadState(badKey).longHorizonGuidance, null, '无 payload → 当作没有')
+})
+
 try { fs.rmSync(TMP_HOME, { recursive: true, force: true }) } catch { /* ignore */ }
 
 console.log(`\n✅ 全部通过（${passed} 项）`)

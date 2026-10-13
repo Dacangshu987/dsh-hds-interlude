@@ -915,7 +915,11 @@ await check('并发扫描下每条待办最多开口一次（定时器撞上启�
     hostOptions: { wakeDelayMs: 800, writeDelayMs: 200 },
   })
 
-  await waitFor(() => loadState(sessionId).intents.every(i => i.status === 'delivered'), 9000)
+  // 等待上限放宽到 20 秒：这条用例断言的是「每条待办最多开口一次」这个**顺序/次数**
+  // 性质，不是延迟。全链一起跑时机器忙，冷会话唤醒（模拟 800ms）+ 落盘（200ms）
+  // 叠加起来可能超过 9 秒，于是偶发假红（实测在整链里偶现、单跑稳定通过）。
+  // 放宽等待不会削弱它要钉的东西。
+  await waitFor(() => loadState(sessionId).intents.every(i => i.status === 'delivered'), 20000)
   const openings = host.openings
   assert.equal(openings.filter(x => x === 'i1').length, 1, `i1 被开口了多次：${JSON.stringify(openings)}`)
   assert.ok(openings.filter(x => x === 'i2').length <= 1, `i2 被开口了多次：${JSON.stringify(openings)}`)
