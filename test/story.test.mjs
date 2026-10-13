@@ -99,7 +99,9 @@ check('speechContentOf 剥掉旁白后为空 → 这条其实没话说（判定�
 
 console.log('\n发言门控：什么时候真的发出去')
 
-const base = { text: '“在忙吗”', bound: true, lastMessageAt: 0, messageIntervalMinutes: 120 }
+// 台词来源是**工具申报**（`explicitSpeech`），正文只作叙事。
+// 2026-10-13 起「从正文抽整行引号」的兼容路径已删除——正文不再有任何投递后果。
+const base = { text: '（她看了眼手机。）', explicitSpeech: ['在忙吗'], bound: true, lastMessageAt: 0, messageIntervalMinutes: 120 }
 
 check('说了话 + 有绑定 + 间隔已过 → speak', () => {
   const d = decideAdvanceDelivery({ ...base })
@@ -108,10 +110,20 @@ check('说了话 + 有绑定 + 间隔已过 → speak', () => {
 })
 
 check('没说话（只有旁白）→ story-only，且不占任何额度', () => {
-  const d = decideAdvanceDelivery({ ...base, text: '（洗完澡就睡了。）' })
+  const d = decideAdvanceDelivery({ ...base, text: '（洗完澡就睡了。）', explicitSpeech: [] })
   assert.equal(d.mode, 'story-only')
   assert.equal(d.reason, 'no-speech')
   assert.deepEqual(d.messages, [])
+})
+
+check('【关键】正文里写整行引号、但没调工具 → **一个字都不发**（2026-10-13 补堵）', () => {
+  // 这条路径此前漏了：2026-10-12 移除了外层的正文补发，却留着
+  // `decideAdvanceDelivery` 内部「从正文按整行引号抽台词」的兼容路径。
+  // 结果是模型写正文、没调 interlude_say，那行引号照样会被发出去。
+  const d = decideAdvanceDelivery({ ...base, text: '她放下杯子。\n\n“知道了”\n\n“我睡了”', explicitSpeech: [] })
+  assert.equal(d.mode, 'story-only')
+  assert.equal(d.reason, 'no-speech')
+  assert.deepEqual(d.messages, [], '正文不该再有任何投递后果')
 })
 
 check('没有聊天软件绑定 → story-only（Web 会话没有收件人）', () => {
@@ -220,14 +232,12 @@ check('空文本 / 非文本安静放过，不抛错', () => {
   assert.equal(looksLikeSelfNarration('   ').leak, false)
 })
 
-check('故事续写路径对同一段原文天然安全（提取不到台词）', () => {
-  // 两条路径的防线不同但都成立：这段自言自语里没有引语行，提取为空 → 不发。
-  // 现在更早的一道闸（looksLikeSelfNarration）先把它拦掉了，reason 因此是
-  // self-narration 而不是 no-speech —— 前者更准确（它确实是在自言自语，
-  // 而不是「只是没说台词」）。
+check('故事续写路径对同一段原文天然安全（正文不再参与判定）', () => {
+  // 2026-10-13 起正文**完全不参与**投递判定：没有工具申报就是 no-speech。
+  // 这比「靠一道闸认出它在自言自语」更彻底——不是判得准，而是那条路不存在了。
   const d = decideAdvanceDelivery({ text: LEAKED, bound: true, lastMessageAt: 0, messageIntervalMinutes: 0 })
   assert.equal(d.mode, 'story-only')
-  assert.equal(d.reason, 'self-narration')
+  assert.equal(d.reason, 'no-speech')
   assert.deepEqual(d.messages, [])
 })
 
@@ -257,31 +267,32 @@ check('线上第二次泄漏：思考里的「候选台词」不算台词（2026
   // 所以要明确钉住它，免得有人以为 extractSpeech 是安全的。
   assert.deepEqual(extractSpeech(leaked), ['今天不算，说完就睡', '你倒管起我来了'])
 
-  // 但整段判定必须拦住它。
-  assert.equal(looksLikeSelfNarration(leaked).leak, true)
+  // 但整段判定必须拦住它。2026-10-13 起是**结构性**拦住：正文不参与判定，
+  // 没有工具申报就是 no-speech —— 不再依赖「认出它在自言自语」这道判据。
   const d = decideAdvanceDelivery({
     text: leaked, bound: true, lastMessageAt: 0,
     autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
   })
   assert.equal(d.mode, 'story-only')
-  assert.equal(d.reason, 'self-narration')
+  assert.equal(d.reason, 'no-speech')
   assert.deepEqual(d.messages, [], '思考里的候选台词一个字都不该发出去')
 })
 
 check('自言自语闸不误伤正常续写', () => {
   // 最要紧的一半：正常的故事 + 真台词必须照发，否则角色就哑了。
+  // 台词现在来自**工具申报**，正文只作叙事（这正是「从根上分离」）。
   const normal = [
-    '（下班回来，把包往沙发上一扔。）\n\n先浇了水，又泡了碗面。\n\n“在忙吗”',
-    '今天下班迟了。\n“你忙你的，看到回”',
-    '“青提真留了一半，冰箱里。”',
+    { text: '（下班回来，把包往沙发上一扔。）\n\n先浇了水，又泡了碗面。', speech: ['在忙吗'] },
+    { text: '今天下班迟了。', speech: ['你忙你的，看到回'] },
+    { text: '（翻了翻冰箱。）', speech: ['青提真留了一半，冰箱里。'] },
   ]
-  for (const text of normal) {
+  for (const item of normal) {
     const d = decideAdvanceDelivery({
-      text, bound: true, lastMessageAt: 0,
+      text: item.text, explicitSpeech: item.speech, bound: true, lastMessageAt: 0,
       autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
     })
-    assert.equal(d.mode, 'speak', `不该拦：${JSON.stringify(text)}（reason=${d.reason}）`)
-    assert.ok(d.messages.length > 0, `应当有话可发：${JSON.stringify(text)}`)
+    assert.equal(d.mode, 'speak', `不该拦：${JSON.stringify(item.speech)}（reason=${d.reason}）`)
+    assert.ok(d.messages.length > 0, `应当有话可发：${JSON.stringify(item.speech)}`)
   }
 })
 
@@ -359,14 +370,16 @@ check('显式发言优先于正文提取（interlude_say）', () => {
   assert.equal(d.reason, 'speak-explicit')
   assert.deepEqual(d.messages, ['今天不算，说完就睡', '你倒管起我来了'])
 
-  // 同样一段正文，没有显式发言时会被自言自语闸拦下——说明分离确实起了作用。
+  // 同样一段正文，没有显式发言时**什么都发不出去**——说明分离确实起了作用。
+  // 理由现在是 no-speech（正文根本不参与判定），而不是靠闸「认出它在自言自语」。
   const without = decideAdvanceDelivery({
     text: bodyWithCandidates,
     bound: true, lastMessageAt: 0,
     autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
   })
   assert.equal(without.mode, 'story-only')
-  assert.equal(without.reason, 'self-narration')
+  assert.equal(without.reason, 'no-speech')
+  assert.deepEqual(without.messages, [])
 })
 
 check('显式发言里若写了思考，仍会被自言自语闸拦下', () => {
@@ -381,16 +394,18 @@ check('显式发言里若写了思考，仍会被自言自语闸拦下', () => {
   assert.equal(d.reason, 'self-narration')
 })
 
-check('显式发言为空时退回兼容路径（不影响旧行为）', () => {
+check('显式发言为空时**不再**退回正文提取（2026-10-13 补堵的旧行为）', () => {
+  // 这条用例此前断言的是相反的结果（旧行为：从正文抽引号台词发出去）。
+  // 那条兼容路径就是 2026-10-12 泄漏能复发的原因，现已删除。
   const d = decideAdvanceDelivery({
     text: '（下班回来。）\n\n“在忙吗”',
     explicitSpeech: [],
     bound: true, lastMessageAt: 0,
     autoMessageEnabled: true, advanceEnabled: true, reachedOut: 0, maxPerDay: 6,
   })
-  assert.equal(d.mode, 'speak')
-  assert.equal(d.reason, 'speak', '兼容路径的 reason 仍是 speak')
-  assert.deepEqual(d.messages, ['在忙吗'])
+  assert.equal(d.mode, 'story-only')
+  assert.equal(d.reason, 'no-speech', '没有工具申报就是没说话')
+  assert.deepEqual(d.messages, [], '正文里那行引号不该被发出去')
 })
 
 check('显式发言也要过绑定/间隔/配额这些门', () => {
