@@ -25,6 +25,7 @@ import {
   splitDumpParts, WORK_INSTRUCTION, ASYNC_WORK_INSTRUCTION,
   createWorkState, proposeWorkEdit, resolveWorkProposal, recordWorkFailure, workContextProjection,
   normalizeWorkState, renderWorkProjection, workOperationKey,
+  startWorkGeneration, completeWorkGeneration, cancelWorkGeneration, workGenerationStatus,
 } from '../lib/works.js'
 
 let passed = 0
@@ -487,6 +488,124 @@ check('workOperationKey 与 proposeWorkEdit 配合：同一操作键只产生一
   eq(first.reused, false, '第一次是新建')
   eq(retry.reused, true, '重试复用')
   eq(retry.state.proposals.length, 1, '只有一条提案')
+})
+
+/* ─────────────── I. 异步写手任务的作业生命周期 ─────────────── */
+
+check('startWorkGeneration：幂等 + 并发上限 1 + 基础版本校验', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: '第一版', newId })
+  const started = startWorkGeneration(state, {
+    input: { baseRevisionId: state.head, brief: '写一段关于雨的' }, operationKey: 'g1', modelId: 'm1', newId,
+  })
+  eq(started.job.status, 'running', '新任务是 running')
+  eq(started.job.brief, '写一段关于雨的')
+  eq(started.reused, false)
+  // ① 幂等：同操作键复用（不再起一个）。
+  const retry = startWorkGeneration(started.state, {
+    input: { baseRevisionId: state.head, brief: '写一段关于雨的' }, operationKey: 'g1', modelId: 'm1', newId,
+  })
+  eq(retry.reused, true, '同操作键复用')
+  eq(retry.state.jobs.length, 1, '不会多出一个任务')
+  // ② 并发上限 1：已有 running 时拒绝。
+  throws(() => startWorkGeneration(started.state, {
+    input: { baseRevisionId: state.head, brief: '另一个' }, operationKey: 'g2', newId,
+  }), '并发上限 1')
+  // ④ 基础版本必须等于 head。
+  throws(() => startWorkGeneration(state, {
+    input: { baseRevisionId: 'zz', brief: 'x' }, operationKey: 'g3', newId,
+  }), '基础版本过期应报错')
+  // 入参还要过 parseWorkGenerationRequest（空 brief 不行）。
+  throws(() => startWorkGeneration(state, {
+    input: { baseRevisionId: state.head, brief: '' }, operationKey: 'g4', newId,
+  }), '空创作意图应报错')
+})
+
+check('startWorkGeneration：不改入参；取消后并发名额腾出来', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const frozen = JSON.parse(JSON.stringify(state))
+  const started = startWorkGeneration(state, {
+    input: { baseRevisionId: state.head, brief: 'b' }, operationKey: 'g1', newId,
+  })
+  eq(state, frozen, '入参不该被改动')
+  // 取消 → 名额腾出来 → 能再起一个。
+  const cancelled = cancelWorkGeneration(started.state, started.job.id)
+  eq(cancelled.state.jobs[0].status, 'cancelled')
+  const again = startWorkGeneration(cancelled.state, {
+    input: { baseRevisionId: state.head, brief: 'b2' }, operationKey: 'g2', newId,
+  })
+  eq(again.job.status, 'running', '取消后可再起')
+})
+
+check('completeWorkGeneration：有产出落成**待决提案**；无产出标 failed', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: '第一版', newId })
+  const started = startWorkGeneration(state, {
+    input: { baseRevisionId: state.head, brief: '写一段关于雨的' }, operationKey: 'g1', newId,
+  })
+  const done = completeWorkGeneration(started.state, started.job.id, { content: '写手产出的正文', newId })
+  eq(done.changed, true)
+  eq(done.job.status, 'completed', '任务完成')
+  eq(done.job.proposalId, done.proposal.id, '任务指向它产生的提案')
+  eq(done.proposal.status, 'pending', '落成**待决**提案（不是直接写进作品）')
+  eq(done.proposal.content, '写手产出的正文')
+  eq(done.proposal.reason, '写一段关于雨的', '理由来自创作意图')
+  eq(done.proposal.author, 'protagonist', '写手产出算「她」的')
+  eq(done.proposal.baseRevisionId, state.head, '基础版本是起任务时的 head')
+  eq(done.state.head, state.head, '**作品本身没变**（要等用户接受）')
+  // 无产出（写手失败）→ failed，不写提案。
+  const failed = completeWorkGeneration(started.state, started.job.id, { newId })
+  eq(failed.job.status, 'failed')
+  eq(failed.proposal, undefined, '失败不产生提案')
+  eq(failed.state.proposals.length, 0, '提案数为 0')
+  // 超长产出按失败处理（宁可 failed，也不写一条超硬校验的提案）。
+  const tooLong = completeWorkGeneration(started.state, started.job.id, {
+    content: 'x'.repeat(WORK_LIMITS.content + 1), newId,
+  })
+  eq(tooLong.job.status, 'failed', '超长产出 → failed')
+})
+
+check('completeWorkGeneration：任务不是 running 就什么都不做（晚到的产出不写进去）', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const started = startWorkGeneration(state, {
+    input: { baseRevisionId: state.head, brief: 'b' }, operationKey: 'g1', newId,
+  })
+  // 已取消的任务：晚到的产出不该再写进去。
+  const cancelled = cancelWorkGeneration(started.state, started.job.id)
+  const late = completeWorkGeneration(cancelled.state, started.job.id, { content: '晚到的产出', newId })
+  eq(late.changed, false, '不再改动')
+  eq(late.state.proposals.length, 0, '不产生提案')
+  // 不存在的任务同样不动。
+  eq(completeWorkGeneration(state, 'nope', { content: 'x', newId }).changed, false)
+})
+
+check('cancelWorkGeneration：已结束的任务不能再改结论', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const started = startWorkGeneration(state, {
+    input: { baseRevisionId: state.head, brief: 'b' }, operationKey: 'g1', newId,
+  })
+  const done = completeWorkGeneration(started.state, started.job.id, { content: '产出', newId })
+  throws(() => cancelWorkGeneration(done.state, started.job.id), '已完成的任务不能取消')
+  throws(() => cancelWorkGeneration(state, 'nope'), '不存在的任务应报错')
+})
+
+check('workGenerationStatus：进程重启留下的孤儿任务判 interrupted', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const started = startWorkGeneration(state, {
+    input: { baseRevisionId: state.head, brief: 'b' }, operationKey: 'g1', newId,
+  })
+  // 本进程里**没有**这个任务在跑 → 它是重启留下的孤儿，永远不会自己完成。
+  // 不这么映射的话，界面上会永远显示「正在写」。
+  eq(workGenerationStatus(started.state, [])[0].status, 'interrupted', '孤儿判 interrupted')
+  eq(workGenerationStatus(started.state, [started.job.id])[0].status, 'running', '真在跑就是 running')
+  // 已结束的任务不受影响。
+  const done = completeWorkGeneration(started.state, started.job.id, { content: 'x', newId })
+  eq(workGenerationStatus(done.state, [])[0].status, 'completed', '已完成照旧')
+  eq(workGenerationStatus(null, []), [], '坏输入返回空数组')
 })
 
 console.log(`\n共同作品：通过 ${passed} 项，失败 ${failed} 项`)
