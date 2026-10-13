@@ -648,5 +648,33 @@ if (saveCall) {
     + `未暴露 ${uncovered.filter(isAllowed).length}（已登记理由）；待暴露 ${uncovered.filter(isPending).length}`)
 }
 
+check('面板段名带上游【档位 序号】编号（只标精确对应的段）', () => {
+  // 对齐上游设置页的结构：上游给每个段一个「【档位 序号】名称」编号
+  // （必填 1–3 / 结构 4 / 节奏 5–9 / 内在 10–13 / 扩展 14–18 / 维护 19–20）。
+  // 本仓面板是手写的，段名与上游不总是同名，所以只给**概念精确对应**的段加编号。
+  const advanced = collectText(goTab('扩展'))
+  assert.ok(advanced.includes('世界事件播种器【扩展 15】'), `扩展页应有世界播种器编号：${advanced.slice(0, 200)}`)
+  assert.ok(advanced.includes('长线叙事催化器（实验）【扩展 16】'), '扩展页应有长线叙事编号')
+
+  const chat = collectText(goTab('聊天'))
+  assert.ok(chat.includes('QQ 机器人【必填 3】'), `聊天页应有 QQ 接入编号：${chat.slice(0, 200)}`)
+
+  const presets = collectText(goTab('预设/命令'))
+  assert.ok(presets.includes('实时日志【维护 20】'), `预设页应有日志编号：${presets.slice(0, 200)}`)
+})
+
+check('自建段**不贴**上游编号（贴错的编号比不贴更糟）', () => {
+  // 这几个段上游没有对应物，属于本仓自建；给它们编号会让用户以为上游也有。
+  const chat = collectText(goTab('聊天'))
+  assert.ok(chat.includes('合并转发读取'), '自建段仍在')
+  assert.ok(!/合并转发读取【/.test(chat), '自建段不该带编号')
+  const advanced = collectText(goTab('扩展'))
+  assert.ok(!/跨群投递【/.test(advanced), '自建段不该带编号')
+  // 约定说明要摆出来（否则用户不知道那个编号是什么意思）。
+  // 它在**节奏**页的「功能开关」区块下面（与那几个悬停解释同处）。
+  const rhythm = collectText(goTab('节奏'))
+  assert.ok(rhythm.includes('沿用上游设置页编号'), `应有编号约定的说明：${rhythm.slice(-200)}`)
+})
+
 console.log(`\n配置面板覆盖度：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)
