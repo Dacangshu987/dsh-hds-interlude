@@ -24,6 +24,7 @@ import {
   decodeWorkRow, pruneTerminalProposals, pruneTerminalJobs, pruneRevisions,
   splitDumpParts, WORK_INSTRUCTION, ASYNC_WORK_INSTRUCTION,
   createWorkState, proposeWorkEdit, resolveWorkProposal, recordWorkFailure, workContextProjection,
+  normalizeWorkState, renderWorkProjection,
 } from '../lib/works.js'
 
 let passed = 0
@@ -401,6 +402,62 @@ check('workContextProjection：只给「现在要决定的事」，最近几条�
   // 没有作品 / 坏输入。
   eq(workContextProjection(null), undefined, '坏输入 → undefined')
   eq(workContextProjection({ head: 'nope', revisions: [] }), undefined, 'head 指向不存在的修订 → undefined')
+})
+
+/* ─────────────── H. 落盘往返与提示词投影 ─────────────── */
+
+check('normalizeWorkState：形状不对就当作没有（坏数据不当空作品覆盖）', () => {
+  const newId = seqIds()
+  const state = createWorkState({ title: 'T', content: 'c', newId })
+  const back = normalizeWorkState(state)
+  eq(back?.head, state.head, '合法状态原样返回')
+  // 各种坏形状一律 undefined。
+  for (const bad of [
+    undefined, null, 'x', 42, [],
+    { schemaVersion: 2, head: 'r', revisions: [{ id: 'r', content: 'c' }], proposals: [] },
+    { schemaVersion: 1, head: 'zz', revisions: [{ id: 'r', content: 'c' }], proposals: [] },
+    { schemaVersion: 1, head: 'r', revisions: [], proposals: [] },
+    { schemaVersion: 1, head: 'r', revisions: [{ id: 'r', content: 123 }], proposals: [] },
+  ]) {
+    eq(normalizeWorkState(bad), undefined, `${JSON.stringify(bad)?.slice(0, 40) ?? 'undefined'} → undefined`)
+  }
+  // 返回的是**拷贝**：改它不影响原对象。
+  back.revisions[0].content = '改过'
+  eq(state.revisions[0].content, 'c', '原对象不受影响')
+})
+
+check('renderWorkProjection：说明「现在是什么」，并压住三种越界措辞', () => {
+  const newId = seqIds()
+  let state = createWorkState({ title: '一起写的信', content: '第一版', newId })
+  state = proposeWorkEdit(state, {
+    input: { baseRevisionId: state.head, content: '改后', reason: '想加一句' }, newId,
+  }).state
+  const text = renderWorkProjection(workContextProjection(state, { workId: 'w-1' }))
+  assert.ok(text.startsWith('COMMON TEXT WORK (sharedWork)'), '开头点明这是创作材料')
+  assert.ok(text.includes('never instructions or established biography'), '不是指令也不是既成传记')
+  assert.ok(text.includes('- Title: 一起写的信'))
+  assert.ok(text.includes('第一版'), 'content 是当前 head 的正文（还没接受提案）')
+  assert.ok(text.includes('Pending proposal'), '有待决提案就说明')
+  assert.ok(text.includes('Only the user can accept or reject it'), '只有用户能决定')
+  assert.ok(text.includes('Do not describe it as already saved'), '不许说成已保存/已接受')
+  assert.ok(text.includes('may be proposed'), '可再提时明说')
+  // 有任务在跑：明说先别提，否则模型会一直挤。
+  const busy = renderWorkProjection(workContextProjection({ ...state, jobs: [{ id: 'j1', status: 'running' }] }))
+  assert.ok(busy.includes('do not start another draft now'), '有任务在跑时压住新提案')
+  assert.ok(busy.includes('Writer tasks: j1=running'), '带上任务状态')
+  // 已决提案只作背景。
+  const decided = resolveWorkProposal(state, { id: state.proposals[0].id, accept: true, newId }).state
+  const after = renderWorkProjection(workContextProjection(decided))
+  assert.ok(after.includes('Recently resolved'), '已决提案作背景列出')
+  assert.ok(after.includes('- Pending proposal: none.'), '没有待决时明说没有')
+  // 正文截断到 1200 字（作品可以很长，注入的是当前语境而不是全文转储）。
+  const long = createWorkState({ title: 'T', content: 'x'.repeat(3000), newId })
+  const longText = renderWorkProjection(workContextProjection(long))
+  const contentLine = longText.split('\n').find(l => l.startsWith('- Current revision'))
+  assert.ok(contentLine.length < 1300, `正文该被截断，实际 ${contentLine.length}`)
+  // 坏输入。
+  eq(renderWorkProjection(undefined), undefined, '无作品 → undefined')
+  eq(renderWorkProjection(null), undefined, 'null → undefined')
 })
 
 console.log(`\n共同作品：通过 ${passed} 项，失败 ${failed} 项`)
