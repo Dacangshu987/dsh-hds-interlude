@@ -605,5 +605,145 @@ await check('所有开关都带内联开关样式（没有漏配的裸 checkbox�
   }
 })
 
+/* ───────── 分区折叠与搜索（2026-10 面板改版）───────── */
+
+/**
+ * 这个夹具的节点形状是 React 惯例：子节点挂在 `props.children` 上
+ * （可能是一个数组，也可能是单个值）。**不要**读 `node.children`——
+ * 那是另一个测试文件（`client-panel-coverage`）的夹具形状。
+ * 生产代码 `childListOf` 两种都认，测试这里按本文件的夹具来即可。
+ */
+const kidsOf = (el) => {
+  const c = el && el.props ? el.props.children : undefined
+  if (c === undefined || c === null) return []
+  return Array.isArray(c) ? c : [c]
+}
+
+/**
+ * **递归**取文字。
+ *
+ * 本文件既有的 `textOf` 是浅层的（只取直接字符串子节点），用来找按钮刚好够用；
+ * 但分区的标题行嵌了两层（标题行 → 标题节点 → 文字），浅层版会返回空串，
+ * 于是「按标题找分区」一个都匹配不上。这里自己补一个会递归的。
+ */
+const deepText = (node) => {
+  if (node === null || node === undefined || node === false || node === true) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(deepText).join('')
+  const c = node.props ? node.props.children : undefined
+  return c === undefined ? '' : deepText(c)
+}
+
+/**
+ * 按标题找分区节点。
+ *
+ * 分区结构是 `children[0] = 可点标题行（▾ + 原标题节点[+ 命中标记]）`、
+ * `children[1] = 正文`。所以比对时**要去掉折叠标记**——标题节点本身的文字
+ * 仍然是干净的原标题。
+ */
+function sectionByTitle(tree, title) {
+  return all(tree).find((el) => {
+    if (!el.props || el.props.className !== 'hdsi-section') return false
+    const row = deepText(kidsOf(el)[0]).replace(/[▾▸]/g, '').replace(/命中/g, '').trim()
+    return row === title
+  })
+}
+
+/** 分区正文是否可见（收起＝正文那层有 display:none）。 */
+function sectionOpen(tree, title) {
+  const section = sectionByTitle(tree, title)
+  if (!section) return null
+  const body = kidsOf(section)[1]
+  return !(body && body.props && body.props.style && body.props.style.display === 'none')
+}
+
+/** 点分区标题行（展开/收起）。 */
+function clickSectionTitle(tree, title) {
+  const section = sectionByTitle(tree, title)
+  assert.ok(section, `找不到分区「${title}」`)
+  const header = kidsOf(section)[0]
+  assert.ok(header && header.props && typeof header.props.onClick === 'function', `分区「${title}」的标题不可点`)
+  header.props.onClick()
+  return rerender()
+}
+
+/** 分区搜索框。 */
+function searchBox(tree) {
+  return all(tree).find(el => el.tag === 'input'
+    && typeof el.props.placeholder === 'string'
+    && el.props.placeholder.indexOf('命中的分区') >= 0)
+}
+
+await check('面板默认只开常用区；进阶区收起但**内容仍在渲染树里**', async () => {
+  let tree = await mount({})
+  tree = switchTab(tree, '扩展')
+  // 扩展页整页都是进阶/实验功能 → 默认全收起。
+  assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), false, '世界事件播种器默认收起')
+  assert.equal(sectionOpen(tree, '长线叙事催化器（实验）【扩展 16】'), false, '长线叙事默认收起')
+  // 【关键】收起的分区，字段仍必须留在渲染树里——否则「覆盖度」测试会
+  // 误判成「这个字段没上面板」，折叠就变成了悄悄藏功能。
+  const hidden = sectionByTitle(tree, '世界事件播种器【扩展 15】')
+  assert.ok(hidden, '应能找到该分区')
+  assert.ok(deepText(hidden).length > 20, `收起的分区内容仍在树里：${deepText(hidden).slice(0, 60)}`)
+
+  // 常用区默认展开。
+  tree = switchTab(tree, '节奏')
+  assert.equal(sectionOpen(tree, '时间'), true, '节奏页「时间」默认展开')
+  assert.equal(sectionOpen(tree, '消息节奏'), true, '节奏页「消息节奏」默认展开')
+})
+
+await check('点分区标题可以展开与收起（同一区来回切换）', async () => {
+  let tree = await mount({})
+  tree = switchTab(tree, '扩展')
+  assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), false, '初始收起')
+  tree = clickSectionTitle(tree, '世界事件播种器【扩展 15】')
+  assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), true, '点一下展开')
+  tree = clickSectionTitle(tree, '世界事件播种器【扩展 15】')
+  assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), false, '再点收起')
+  // 一个区的开合不影响另一个区。
+  assert.equal(sectionOpen(tree, '长线叙事催化器（实验）【扩展 16】'), false, '别的区不受影响')
+})
+
+await check('搜索：标题命中或**区内文字**命中的分区都强制展开', async () => {
+  let tree = await mount({})
+  tree = switchTab(tree, '扩展')
+  const box = searchBox(tree)
+  assert.ok(box, '面板顶部应有分区搜索框')
+
+  // 按标题搜（用标题里连续出现的词——「世界播种器」不是子串，中间隔着「事件」）。
+  box.props.onChange({ target: { value: '世界事件' } })
+  tree = rerender()
+  assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), true, '标题命中 → 展开')
+  assert.equal(sectionOpen(tree, '长线叙事催化器（实验）【扩展 16】'), false, '没命中的仍收起')
+
+  // 按**区内文字**搜（标题里没有这个词）。
+  const box2 = searchBox(tree)
+  box2.props.onChange({ target: { value: '执行器' } })
+  tree = rerender()
+  const anyMatched = ['世界事件播种器【扩展 15】', '长线叙事催化器（实验）【扩展 16】']
+    .some(title => sectionOpen(tree, title) === true)
+  assert.ok(anyMatched, '按区内文字也应命中并展开')
+
+  // 清空 → 回到默认开合。
+  searchBox(tree).props.onChange({ target: { value: '' } })
+  tree = rerender()
+  assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), false, '清空搜索后回到默认收起')
+})
+
+await check('手动开合与搜索互不干扰：清空搜索后保留用户的选择', async () => {
+  let tree = await mount({})
+  tree = switchTab(tree, '扩展')
+  // 用户手动打开一个默认收起的区。
+  tree = clickSectionTitle(tree, '模型特化')
+  assert.equal(sectionOpen(tree, '模型特化'), true, '手动展开')
+  // 搜索一下再清空。
+  searchBox(tree).props.onChange({ target: { value: '世界' } })
+  tree = rerender()
+  searchBox(tree).props.onChange({ target: { value: '' } })
+  tree = rerender()
+  // 用户的选择还在（不会被「清空搜索」重置成默认收起）。
+  assert.equal(sectionOpen(tree, '模型特化'), true, '用户的手动选择应保留')
+})
+
 console.log(`\n设置页输入：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)
