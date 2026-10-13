@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 
 import {
   segmentsFromMessages, aggregateDeliveryStatus, createDeliveryAction,
-  normalizeDeliveries, updateDeliveryAction, appendDeliveryAction,
+  normalizeDeliveries, updateDeliveryAction, appendDeliveryAction, deliveryReality,
 } from '../lib/delivery-ledger.js'
 
 let passed = 0
@@ -198,6 +198,65 @@ ok('appendDeliveryAction：同 id 幂等跳过', () => {
   const a = createDeliveryAction({ id: 'a', segments: [] })
   const list = appendDeliveryAction([], a, 10)
   assert.equal(appendDeliveryAction(list, a, 10).length, 1)
+})
+
+/* ------------------------------------------------- ⑥ 交付现实视图（上游 delivery-reality.ts） */
+
+/** 造一条账：`statuses` 逐段给状态。 */
+const acted = (id, entryId, statuses, participantId) => createDeliveryAction({
+  id,
+  entryId,
+  ...(participantId ? { participantId } : {}),
+  segments: statuses.map((status, index) => ({ index, kind: 'message', content: `第${index}句`, status })),
+})
+
+ok('deliveryReality：只有「有未送达段」的事件才出现（全送达的不占篇幅）', () => {
+  const list = [
+    acted('a1', 1, ['delivered', 'delivered']),
+    acted('a2', 2, ['delivered', 'pending']),
+    acted('a3', 3, ['delivered', 'cancelled']),
+  ]
+  const views = deliveryReality(list, undefined)
+  assert.deepEqual(views.map(v => v.actionId), ['a2', 'a3'], '全送达的 a1 不出现')
+})
+
+ok('deliveryReality：段状态映射成交付现实措辞', () => {
+  const views = deliveryReality([
+    acted('a1', 1, ['pending']),
+    acted('a2', 2, ['failed']),
+    acted('a3', 3, ['cancelled']),
+    acted('a4', 4, ['delivered', 'pending']),
+  ], undefined)
+  const outcomes = views.flatMap(v => v.segments.map(s => s.outcome))
+  assert.ok(outcomes.includes('not-confirmed'), 'pending → not-confirmed')
+  assert.ok(outcomes.includes('delivery-not-confirmed-after-error'), 'failed → 出错后未确认')
+  assert.ok(outcomes.includes('cancelled'), 'cancelled → 原样')
+  assert.ok(outcomes.includes('delivered'), '已送达的段也如实带出（好让模型别重复）')
+})
+
+ok('deliveryReality：空段但有事件记录 → 如实给一条「没有记录到外发动作」', () => {
+  const views = deliveryReality([{ id: 'z1', entryId: 9, segments: [] }], undefined)
+  assert.equal(views.length, 1)
+  assert.equal(views[0].communicationOutcome, 'no-outgoing-action-recorded')
+  assert.deepEqual(views[0].segments, [])
+  // 连 entryId 都没有的空账：没什么可说的，不产生条目。
+  assert.equal(deliveryReality([{ id: 'z2', segments: [] }], undefined).length, 0)
+})
+
+ok('deliveryReality：按关系过滤（不共享细节时不带别的参与者）', () => {
+  const list = [acted('x1', 1, ['pending'], 'OTHER'), acted('x2', 2, ['pending'], 'U1')]
+  assert.deepEqual(deliveryReality(list, 'U1').map(v => v.actionId), ['x2'], '只看这一关系')
+  assert.deepEqual(deliveryReality(list, 'U1', true).map(v => v.actionId), ['x1', 'x2'], '共享细节时放行')
+  // 没有 participantId 的账不受这道筛选影响（本仓的常态）。
+  assert.equal(deliveryReality([acted('n1', 1, ['pending'])], 'U1').length, 1)
+})
+
+ok('deliveryReality：只取最近 limit 条，坏输入不抛错', () => {
+  const list = [acted('a1', 1, ['pending']), acted('a2', 2, ['pending']), acted('a3', 3, ['pending'])]
+  assert.deepEqual(deliveryReality(list, undefined, false, 2).map(v => v.actionId), ['a2', 'a3'], '取最近的')
+  assert.equal(deliveryReality(list, undefined, false, 0).length, 3, 'limit 0 回默认')
+  assert.deepEqual(deliveryReality(null, undefined), [], 'null 安全')
+  assert.deepEqual(deliveryReality([null, 42, 'x'], undefined), [], '坏条目跳过')
 })
 
 /* ------------------------------------------------------------ 汇总 */
