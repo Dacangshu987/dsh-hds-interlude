@@ -40,7 +40,7 @@ const check = async (label, fn) => {
 console.log('Phase 2/3 端到端')
 
 /** 起一个真插件实例。events 会作为会话日志（供记账）。 */
-async function boot({ events = [], statePatch = {}, keepState = false, bindIm = false, extraSessions = [] } = {}) {
+async function boot({ events = [], statePatch = {}, keepState = false, bindIm = false, extraSessions = [], transport = null } = {}) {
   // keepState：保留上一次写下的状态文件，用于「盘上的事实能否被读回来」这类用例。
   // 默认清盘——多数用例需要一个干净的起点，残留会串台。
   if (!keepState) fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
@@ -109,6 +109,11 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
     store.set({ conversationKey: 'c2c:USER1', sessionId: SESSION, botId: 'qq_test', name: '测试' })
   }
   clearImBindingCache()
+
+  // transport：可选的投递出口替身（`ctx.__qqImTransport`）。
+  // 给了它就**不走真实网络**，但仍走通道的完整记账/分条路径，
+  // 所以测到的投递决策（含被动回复引用哪条消息）是真行为。
+  if (transport) ctx.__qqImTransport = transport
 
   const fiber = ctx.plugin(plugin, plugin.Config({
     timeZone: 'Asia/Shanghai',
@@ -517,6 +522,12 @@ await check('续写书签：注入里要求「不要重述」且只给指针', a
 /* ============================ ⑧ 消息感知（beta10） ============================ */
 
 /** 直接往会话事件流里发一轮「用户来消息 → 模型写正文 → 回合结束」。 */
+/**
+ * emitTurn：跑一个回合。
+ *
+ * `say` 可以是字符串（普通发言），也可以是 `{ text, replyTo }`——
+ * `replyTo` 用于验证「指名引用」（对齐上游 `ChatActions.quoteReply`）。
+ */
 async function emitTurn(ctx, { body, say = null, usage = null } = {}) {
   const logs = []
   const origLog = console.log
@@ -531,7 +542,15 @@ async function emitTurn(ctx, { body, say = null, usage = null } = {}) {
       })
     }
     if (say) {
-      ctx.emit('session/event', { id: SESSION }, { type: 'tool/call', data: { name: 'interlude_say', arguments: JSON.stringify({ text: say }) } })
+      const text = typeof say === 'string' ? say : say.text
+      const replyTo = typeof say === 'string' ? undefined : say.replyTo
+      ctx.emit('session/event', { id: SESSION }, {
+        type: 'tool/call',
+        data: {
+          name: 'interlude_say',
+          arguments: JSON.stringify(replyTo ? { text, reply_to: replyTo } : { text }),
+        },
+      })
     }
     ctx.emit('session/event', { id: SESSION }, { type: 'turn/end', data: { turn: 1 } })
     await new Promise(r => setTimeout(r, 20))
@@ -595,6 +614,44 @@ await check('QQ 入站唤醒把 advanceMode 拨成 speak（收到消息必须可
   const after = loadState(SESSION)
   assert.equal(after.advanceMode, 'speak', `入站唤醒后应为 speak，实际 ${after.advanceMode}`)
   assert.ok(followups.length >= 1, '应发起 followup 回合（否则模型不会跑）')
+  await ctx.stop?.()
+})
+
+/* ───────── 指名引用（quoteReply）的最后一跳：插件 → transport ───────── */
+
+await check('指名引用：interlude_say 的 reply_to 被解析成平台 msgId 传给投递侧', async () => {
+  // 这一跳此前没被端到端覆盖过：引用清单（通道侧）与 reply_to 的捕获各自有测试，
+  // 但「插件把 ref 解析成平台 msgId、再交给 transport」这一段没人验过——
+  // 它不可观测的话，引用接错对象也不会有任何测试变红。
+  const sent = []
+  const { ctx } = await boot({
+    events: [],
+    bindIm: true,
+    transport: async (targetId, text, options) => {
+      sent.push({ targetId, text, replyMsgId: options?.replyMsgId })
+      return { sent: true }
+    },
+  })
+
+  // ① 先喂一条真实入站消息：它进通道的**引用环**，拿到 ref `msg-1`。
+  await ctx.__qqIngest({ messageId: 'm-quote-1', kind: 'c2c', senderId: 'USER1', content: '你忙完了吗' }, 'qq_test')
+  await new Promise((r) => setTimeout(r, 60))
+
+  // ② 角色指名引用它回一句。
+  await emitTurn(ctx, { body: '（她看了眼手机。）', say: { text: '在忙吗', replyTo: 'msg-1' } })
+  await new Promise((r) => setTimeout(r, 40))
+
+  const quoted = sent.filter(item => item.replyMsgId)
+  assert.ok(quoted.length >= 1, `应有一条被动回复带上平台 msgId，实际：${JSON.stringify(sent)}`)
+  assert.equal(quoted[0].replyMsgId, 'm-quote-1', '应引用那条入站消息的平台 id')
+  assert.ok(quoted[0].text.includes('在忙吗'), '发出去的仍是那句话')
+
+  // ③ 对照：编一个清单里没有的 ref → **不认**，退化成普通投递（绝不猜）。
+  sent.length = 0
+  await emitTurn(ctx, { body: '（她又看了眼手机。）', say: { text: '知道了', replyTo: 'msg-999' } })
+  await new Promise((r) => setTimeout(r, 40))
+  assert.ok(sent.length >= 1, `编的 ref 不该让投递整个失败，实际：${JSON.stringify(sent)}`)
+  assert.equal(sent[0].replyMsgId, undefined, `编的 ref 不该产生引用，实际：${JSON.stringify(sent)}`)
   await ctx.stop?.()
 })
 
