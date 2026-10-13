@@ -159,5 +159,27 @@ check('renderInboundRefs：limit 只渲染最近几条', () => {
   eq(renderInboundRefs(many, 0), [], 'limit 0 不渲染')
 })
 
+check('normalizeInboundRef：平台 id 与 ref **分开**保存', () => {
+  // ref 是给人/模型看的稳定名字（由序号生成，同毫秒也不撞）；
+  // platformId 才是被动回复真正要用的关联键。两者刻意分开：
+  // 一个由我们生成，一个由平台给。
+  const entry = normalizeInboundRef({ seq: 3, text: '在吗', platformId: 'QQ_MSG_ABC' })
+  eq(entry.ref, 'msg-3', 'ref 由序号生成')
+  eq(entry.platformId, 'QQ_MSG_ABC', '平台 id 原样保留')
+  // 平台没给 id 时留空串（而不是 undefined）——调用方据此判断「不可引用投递」。
+  eq(normalizeInboundRef({ seq: 4, text: 'x' }).platformId, '', '缺 id 时为空串')
+  // 非字符串按空串处理，不抛错。
+  eq(normalizeInboundRef({ seq: 5, text: 'x', platformId: 12345 }).platformId, '', '非字符串平台 id')
+  // 超长截断（平台 id 不该把状态撑爆）。
+  eq(normalizeInboundRef({ seq: 6, text: 'x', platformId: 'a'.repeat(500) }).platformId.length, 256, '截断到 256')
+})
+
+check('resolveInboundRef：命中时连平台 id 一起给出（投递要用）', () => {
+  const list = pushInboundRef([], { seq: 7, text: '楼下涨价了', platformId: 'QQ_7' })
+  eq(resolveInboundRef(list, 'msg-7')?.platformId, 'QQ_7', '命中条目带平台 id')
+  // 编的 ref 仍然一律不命中——哪怕平台 id 看起来对得上。
+  eq(resolveInboundRef(list, 'QQ_7'), undefined, '用平台 id 当 ref 不认（ref 与 platformId 是两个命名空间）')
+})
+
 console.log(`\n入站消息引用：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)

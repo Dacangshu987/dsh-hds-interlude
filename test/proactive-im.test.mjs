@@ -55,9 +55,12 @@ const assistantEvent = (sessionId, text, turn = 1) => ({ type: 'assistant/messag
 const turnEndEvent = (turn = 1) => ({ type: 'turn/end', data: { turn, reason: 'completed' } })
 
 /** interlude_say 的工具调用事件（形态与真实会话日志一致）。 */
-const sayEvent = (text, name = 'interlude_say') => ({
+const sayEvent = (text, name = 'interlude_say', replyTo) => ({
   type: 'tool/call',
-  data: { turn: 1, step: 1, callId: 'call_1', name, arguments: JSON.stringify({ text }) },
+  data: {
+    turn: 1, step: 1, callId: 'call_1', name,
+    arguments: JSON.stringify(replyTo ? { text, reply_to: replyTo } : { text }),
+  },
 })
 
 console.log('文本提取')
@@ -165,6 +168,43 @@ await check('工具名不是 interlude_say 时不误捕获', async () => {
   capture.dispose()
 })
 
+await check('interlude_say 的 reply_to 被捕获为 replyTo（指名引用，对齐上游 quoteReply）', async () => {
+  const ctx = new Context()
+  const capture = installProactiveCapture(ctx)
+  const pending = capture.begin('cap-replyto', 5_000)
+
+  ctx.emit('session/event', { id: 'cap-replyto' }, assistantEvent('cap-replyto', '（看了眼手机。）'))
+  ctx.emit('session/event', { id: 'cap-replyto' }, sayEvent('在忙吗', 'interlude_say', 'msg-3'))
+  ctx.emit('session/event', { id: 'cap-replyto' }, turnEndEvent())
+
+  const result = await pending
+  assert.equal(result.replyTo, 'msg-3', 'ref 应被如实转达给投递侧')
+  assert.deepEqual(result.speech, ['在忙吗'], '发言照旧')
+  capture.dispose()
+})
+
+await check('没给 reply_to 时 replyTo 是空串（不是 undefined，调用方据此判断）', async () => {
+  const ctx = new Context()
+  const capture = installProactiveCapture(ctx)
+  const pending = capture.begin('cap-noreply', 5_000)
+  ctx.emit('session/event', { id: 'cap-noreply' }, sayEvent('在忙吗'))
+  ctx.emit('session/event', { id: 'cap-noreply' }, turnEndEvent())
+  assert.equal((await pending).replyTo, '', '缺省空串')
+  capture.dispose()
+})
+
+await check('非 interlude_say 的工具带了 reply_to 也不捕获（不误认）', async () => {
+  const ctx = new Context()
+  const capture = installProactiveCapture(ctx)
+  const pending = capture.begin('cap-wrongtool', 5_000)
+  ctx.emit('session/event', { id: 'cap-wrongtool' }, sayEvent('别的工具', 'interlude_plan', 'msg-9'))
+  ctx.emit('session/event', { id: 'cap-wrongtool' }, turnEndEvent())
+  const result = await pending
+  assert.deepEqual(result.speech, [], '不是 say 工具就没有发言')
+  assert.equal(result.replyTo, '', '也不该把它的 reply_to 当引用')
+  capture.dispose()
+})
+
 await check('interlude_say 参数坏掉时安静忽略，不抛错', async () => {
   const ctx = new Context()
   const capture = installProactiveCapture(ctx)
@@ -235,7 +275,8 @@ const sent = []
 let transportFails = false
 const transport = async (targetId, text, options) => {
   if (transportFails) { const error = new Error('boom'); error.code = 'delivery-failed'; throw error }
-  sent.push({ targetId, text, hasSignal: Boolean(options?.signal) })
+  // replyMsgId：这一条是不是**被动回复**、引用的是哪条消息（指名引用要靠它验证）。
+  sent.push({ targetId, text, hasSignal: Boolean(options?.signal), replyMsgId: options?.replyMsgId })
   return { sent: true }
 }
 // followup 记录被唤起的提示词，供断言「主动回合确实被发起」。
