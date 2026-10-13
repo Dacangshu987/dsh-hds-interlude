@@ -337,6 +337,48 @@ await check('普通消息（非 / 开头）不触发命令，正常注入', asyn
   assert.equal(result.status, 'delivered', '应正常投递')
 })
 
+/* ─────────── 入站引用环（quoteReply 的通道侧） ─────────── */
+
+await check('入站消息进引用环：可读、可解析、编的 ref 一律不认', async () => {
+  const { channel } = makeChannel(async () => ({ handled: false }))
+  const result = await channel.ingestMessage(
+    { kind: 'c2c', senderId: 'U1', content: '楼下那家面馆涨价了', messageId: 'm-ref-1' },
+    'qq_bot',
+  )
+  assert.equal(result.status, 'delivered', '正常投递')
+  const sessionId = result.sessionId
+  assert.ok(sessionId, '应有 sessionId')
+
+  // 环里只有这一条：ref 由会话内**单调序号**生成，平台 msgId **单独保存**
+  // （ref 是给人/模型看的稳定名字，msgId 才是被动回复要的关联键）。
+  const refs = channel.recentInboundRefs(sessionId)
+  assert.equal(refs.length, 1, '应有 1 条')
+  assert.equal(refs[0].ref, 'msg-1', 'ref 由序号生成')
+  assert.equal(refs[0].platformId, 'm-ref-1', '平台 msgId 单独保存')
+  assert.ok(refs[0].text.includes('涨价'), `应带正文预览：${JSON.stringify(refs[0])}`)
+
+  // 解析**只在清单内**：编的、用平台 id 冒充的、别的会话的，一律不认。
+  assert.equal(channel.resolveInboundRefOf(sessionId, 'msg-1')?.platformId, 'm-ref-1', '命中')
+  assert.equal(channel.resolveInboundRefOf(sessionId, 'msg-99'), undefined, '编的 ref 不认')
+  assert.equal(channel.resolveInboundRefOf(sessionId, 'm-ref-1'), undefined, '平台 id 不能当 ref')
+  assert.equal(channel.resolveInboundRefOf('c2c:OTHER', 'msg-1'), undefined, '别的会话不认')
+})
+
+await check('引用环：多条按序累积，ref 不重复', async () => {
+  const { channel } = makeChannel(async () => ({ handled: false }))
+  const first = await channel.ingestMessage(
+    { kind: 'c2c', senderId: 'U1', content: '第一条', messageId: 'm-a' }, 'qq_bot',
+  )
+  const sessionId = first.sessionId
+  await channel.ingestMessage({ kind: 'c2c', senderId: 'U1', content: '第二条', messageId: 'm-b' }, 'qq_bot')
+
+  const refs = channel.recentInboundRefs(sessionId)
+  assert.equal(refs.length, 2, '两条都在')
+  assert.deepEqual(refs.map(r => r.ref), ['msg-1', 'msg-2'], 'ref 按序递增')
+  assert.deepEqual(refs.map(r => r.platformId), ['m-a', 'm-b'], '平台 id 一一对应')
+  assert.equal(channel.resolveInboundRefOf(sessionId, 'msg-2')?.platformId, 'm-b', '第二条可解析')
+})
+
 await check('botCommands:false → 命令当普通消息处理', async () => {
   let called = 0
   const { channel } = makeChannel(async () => { called += 1; return { handled: true, reply: 'x' } }, { botCommands: false })
