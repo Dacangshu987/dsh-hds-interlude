@@ -21,6 +21,7 @@ import { imageAttachmentsOf, harvestOne, harvestInboundImages } from '../../lib/
 import {
   humanizeFaces, materializeFaces, describeFace, protectFaces, restoreFaces,
   cleanKeepingFaces, splitKeepingFaces, hasFace,
+  normalizeAllowedNativeFaces, resolveNativeFace, semanticOfFaceId,
 } from '../../lib/qq-im/face.js'
 import { cleanImText, splitImText } from '../../lib/im.js'
 import { splitOutboundText } from '../../lib/qq-im/outbound.js'
@@ -414,6 +415,60 @@ check('listStickers：体积上限的坏值回落到默认，不把整次列举�
   for (const bad of [0, -1, Number.NaN, undefined, 'nope']) {
     eq(listStickers(dir, { limit: 100, maxBytes: bad }).length, 1, `maxBytes=${String(bad)} 应回默认上限`)
   }
+})
+
+/* ════════════════════════════════════ 结构化原生表情（对齐上游 ChatActions 段） */
+
+check('normalizeAllowedNativeFaces：默认集与上游一致，未知项剔除、顺序稳定', () => {
+  eq(normalizeAllowedNativeFaces(undefined), ['smile', 'laugh', 'sweat', 'awkward'], '上游默认集')
+  eq(normalizeAllowedNativeFaces([]), [], '空数组 = 一个都不允许')
+  // 未知项丢弃、去重、按上游 Schema 顺序输出（不按输入顺序）。
+  eq(normalizeAllowedNativeFaces(['angry', 'nope', 'smile', 'smile']), ['smile', 'angry'])
+})
+
+check('resolveNativeFace：达到阈值且语义在允许集内才发', () => {
+  eq(
+    resolveNativeFace({ semantic: 'smile', willingness: 0.8 }).mark,
+    '[face:14]',
+    'smile 的代表编号',
+  )
+  // 阈值是**大于等于**：正好等于阈值应当发出去。
+  eq(resolveNativeFace({ semantic: 'smile', willingness: 0.7 }).mark, '[face:14]', '等于阈值应发')
+  eq(resolveNativeFace({ semantic: 'smile', willingness: 0.69 }), undefined, '差一点就不发')
+})
+
+check('resolveNativeFace：不在允许集里的语义不发（白名单是硬门）', () => {
+  eq(resolveNativeFace({ semantic: 'angry', willingness: 0.95 }), undefined, '默认集不含 angry')
+  eq(
+    resolveNativeFace({ semantic: 'angry', willingness: 0.95, allowed: ['angry'] }).mark,
+    '[face:11]',
+    '显式放开后即可发',
+  )
+  // 阈值可覆盖。
+  eq(resolveNativeFace({ semantic: 'smile', willingness: 0.5 }), undefined)
+  eq(resolveNativeFace({ semantic: 'smile', willingness: 0.5, threshold: 0.4 }).mark, '[face:14]', '自定义阈值')
+})
+
+check('resolveNativeFace：坏输入一律不发（不猜）', () => {
+  for (const bad of [
+    { semantic: 'wink', willingness: 1 },      // 未知语义
+    { semantic: '', willingness: 1 },          // 空语义
+    { semantic: 'smile' },                     // 缺意愿
+    { semantic: 'smile', willingness: 'x' },   // 非数
+    { semantic: 'smile', willingness: Number.NaN },
+    {},
+    undefined,
+  ]) {
+    eq(resolveNativeFace(bad), undefined, `坏输入应不发：${JSON.stringify(bad)}`)
+  }
+})
+
+check('semanticOfFaceId：八个语义各自认得，语义外的编号不归属', () => {
+  eq(semanticOfFaceId(14), 'smile')
+  eq(semanticOfFaceId(11), 'angry')
+  eq(semanticOfFaceId(66), 'heart')
+  // 西瓜（56）不在八个语义里 —— 不是「未知」，而是本机制不覆盖。
+  eq(semanticOfFaceId(56), undefined)
 })
 
 /* ════════════════════════════════════════════════════ 清理 */

@@ -228,6 +228,9 @@ const state = {
       // 表情清单上限（对齐上游 Stickers 段）：刻意用非默认值。
       catalogLimit: 25,
       maxFileSizeMB: 7,
+      // 原生表情结构化通道（对齐上游 ChatActions 段）：刻意用非默认值。
+      allowedNativeFaces: ['smile', 'angry'],
+      expressionThreshold: 0.55,
       forwardLimits: { maxNodes: 10, maxCharacters: 4000, maxDepth: 1 },
       crossConversation: { enabled: true, maxPerTurn: 2, whitelist: ['group:777'] },
     },
@@ -330,6 +333,15 @@ check('聊天页有表情清单两个上限，且读回配置里的值（Sticker
   eq(inputs.length, 2, '应当是「条数 + 体积」两个输入')
   eq(Number(inputs[0].props.value), 25, 'catalogLimit')
   eq(Number(inputs[1].props.value), 7, 'maxFileSizeMB')
+})
+
+check('聊天页有原生表情结构化通道，且读回配置里的值（ChatActions 段）', () => {
+  // 白名单是八个语义复选框：夹具里只勾了 smile 与 angry。
+  const boxes = collectInputs(chat).filter(i => i.tag === 'input' && i.props?.type === 'checkbox')
+  const checked = boxes.filter(i => i.props.checked).length
+  assert.ok(checked >= 2, `夹具里至少勾了两个语义，实际勾了 ${checked} 个`)
+  // 阈值读回。
+  eq(Number(controlNearLabel(chat, '发原生表情的最低表达意愿').props.value), 0.55, 'expressionThreshold')
 })
 
 /* ─────────────────── B. 聊天页：转发预算 / 跨群 / 意愿档位 ─────────────────── */
