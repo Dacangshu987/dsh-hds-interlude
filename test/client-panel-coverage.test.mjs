@@ -255,6 +255,9 @@ const state = {
     proactive: { duringSleep: true, duringSleepPromises: false },
     // 长线叙事催化器（实验，对齐上游 longHorizon 段）：刻意用非默认值。
     longHorizon: { enabled: true, triggerScore: 60, reviewIncrement: 120, intensity: 'moderate' },
+    // 日志内容脱敏（对齐上游 Logging 段）：两个隐私开关**刻意打开**非默认值，
+    // 这样面板读错（比如默认成 false）就会露馅。
+    logging: { verbosity: 'diagnostic', logScriptPreview: true, logMessageContent: true, previewLength: 1200 },
   },
 }
 const { fetchImpl, calls } = makeFetch(state)
@@ -396,6 +399,15 @@ check('扩展页有长线叙事催化器（实验，对齐上游 longHorizon）�
   eq(Number(controlNearLabel(advanced, '首次触发门槛').props.value), 60, 'triggerScore')
   eq(Number(controlNearLabel(advanced, '复审增量').props.value), 120, 'reviewIncrement')
   eq(controlNearLabel(advanced, '指导强度').props.value, 'moderate', 'intensity')
+})
+
+check('扩展页有日志内容脱敏两项（对齐上游 Logging），且读回配置值', () => {
+  // 夹具里两个隐私开关**都显式打开**——面板读错（例如把「默认关」写成默认开、
+  // 或把 === true 写成 !== false）都会在这里露馅。
+  eq(checkboxNear(advanced, '日志里带剧本正文片段').props.checked, true, 'logScriptPreview')
+  eq(checkboxNear(advanced, '日志里带用户消息与角色可见消息内容').props.checked, true, 'logMessageContent')
+  eq(controlNearLabel(advanced, '日志里的内容预览字数').props.value, 1200, 'previewLength')
+  eq(controlNearLabel(advanced, '运行信息密度').props.value, 'diagnostic', 'verbosity')
 })
 check('扩展页有世界事件播种器（rc23）并读回配置值', () => {
   const cb = checkboxNear(advanced, '启用：低频生成与她有关的外部事件')
@@ -598,6 +610,12 @@ if (saveCall) {
     // 实际权重固定 1.0 / 0.5（隐私/关系权重契约）。给它们输入框等于假开关。
     'longHorizon.privateWeight': '上游固定 1.0（权重契约），配置不生效',
     'longHorizon.groupWeight': '上游固定 0.5（权重契约），配置不生效',
+    // 终端渲染项：DSH 的日志由宿主 logger 输出，插件无法控制 ANSI 颜色、
+    // 布局与颜文字——给控件只会是一个不生效的开关。
+    'logging.format': '宿主 logger 决定布局，插件不控制',
+    'logging.colors': '宿主 logger 决定着色，插件不控制',
+    'logging.colorTheme': '宿主 logger 决定配色，插件不控制',
+    'logging.kaomoji': '宿主 logger 决定前缀，插件不控制',
   }
   const isAllowed = (path) => Object.keys(NOT_EXPOSED).some((key) => (
     key.endsWith('.') ? path.startsWith(key) : path === key
