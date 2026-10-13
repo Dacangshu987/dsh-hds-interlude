@@ -745,5 +745,27 @@ await check('手动开合与搜索互不干扰：清空搜索后保留用户的�
   assert.equal(sectionOpen(tree, '模型特化'), true, '用户的手动选择应保留')
 })
 
+await check('分享码导入在**预设/命令页**且默认展开（不在扩展页）', async () => {
+  // 定位是有意义的：它和「预设管理 / 机器人命令」同属「配置从哪来」这件事，
+  // 放在扩展页会让人找不到。以后谁再挪走，这条会红。
+  let tree = await mount({})
+  tree = switchTab(tree, '扩展')
+  assert.equal(sectionByTitle(tree, '预设同步（分享码导入）【扩展 18 · 预设页】'), undefined,
+    '扩展页不该再有它')
+
+  tree = switchTab(tree, '预设/命令')
+  const section = sectionByTitle(tree, '预设同步（分享码导入）【扩展 18 · 预设页】')
+  assert.ok(section, '预设/命令页应有分享码导入区')
+  assert.equal(sectionOpen(tree, '预设同步（分享码导入）【扩展 18 · 预设页】'), true,
+    '这一区默认展开（用户主动来找的功能，收起来等于多一次点击）')
+  // 三个关键控件都在：分享站地址 / 分享码 / 预览与应用。
+  const text = deepText(section)
+  assert.ok(text.includes('分享站地址'), '有分享站地址输入')
+  assert.ok(text.includes('分享码'), '有分享码输入')
+  const buttons = all(section).filter(el => el.tag === 'button').map(el => deepText(el))
+  assert.ok(buttons.includes('预览会改什么'), `有预览按钮：${JSON.stringify(buttons)}`)
+  assert.ok(buttons.includes('应用'), '有应用按钮')
+})
+
 console.log(`\n设置页输入：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)

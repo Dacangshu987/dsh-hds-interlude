@@ -16,6 +16,7 @@
  * 运行真实组件，再驱动它的 onClick / onChange。
  */
 import { strict as assert } from 'node:assert'
+import fs from 'node:fs'
 import { Config as ConfigSchema } from '../lib/schema.js'
 
 /* ---------------------------------------------------------------- 捕获模块 */
@@ -674,6 +675,38 @@ check('自建段**不贴**上游编号（贴错的编号比不贴更糟）', () 
   // 它在**节奏**页的「功能开关」区块下面（与那几个悬停解释同处）。
   const rhythm = collectText(goTab('节奏'))
   assert.ok(rhythm.includes('沿用上游设置页编号'), `应有编号约定的说明：${rhythm.slice(-200)}`)
+})
+
+check('默认展开白名单的键**必须都是面板里真实存在的区 key**', () => {
+  // 这条不变量来自一个真实踩过的坑：白名单按区 key 写（`载入预设` / `导入导出` /
+  // `功能` …），而渲染时曾拿**标题文字**去查（`从预设载入` / `导入 / 导出（…）` /
+  // `功能开关`）——十几处对不上，于是那些「常用区」一直是收起的。
+  //
+  // 现在查表用的是 key，但**另一头**同样会错：白名单里写了一个面板中不存在的
+  // 键（改名、删区、手误），它就是一条**永远不生效**的配置，而且完全静默。
+  // 所以两边都机械对一遍。
+  const src = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+  // 面板里真实的 section key：字面量 + 动态 group 列表。
+  const literal = [...src.matchAll(/style: S\.section, className: 'hdsi-section', key: '([^']+)'/g)].map(m => m[1])
+  const groups = (src.match(/var GROUPS = \[([^\]]+)\]/) || [, ''])[1]
+    .split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean)
+  const panelKeys = new Set([...literal, ...groups])
+
+  // 白名单里列出的键。
+  const block = src.slice(
+    src.indexOf('var DEFAULT_OPEN_SECTIONS = {'),
+    src.indexOf('/** 本地记住上次选的 Tab'),
+  )
+  assert.ok(block.length > 0, '应能定位 DEFAULT_OPEN_SECTIONS')
+  const listed = [...block.matchAll(/(?:^|[,{\s])([\u4e00-\u9fff]+):\s*(?:true|false)/g)].map(m => m[1])
+
+  assert.ok(listed.length >= 10, `白名单应列出足够多的区，实际 ${listed.length}`)
+  const unknown = listed.filter(k => !panelKeys.has(k))
+  assert.deepEqual(unknown, [], `这些白名单键在面板里不存在（拼错或区已改名）：${JSON.stringify(unknown)}`)
+  // 反向也看一眼：每个区的开合默认值都得能查到（否则「常用区」会静默不展开）。
+  const unlisted = [...panelKeys].filter(k => !listed.includes(k))
+  assert.deepEqual(unlisted, [], `这些区没在白名单里登记开合默认值：${JSON.stringify(unlisted)}`)
 })
 
 console.log(`\n配置面板覆盖度：通过 ${passed} 项，失败 ${failed} 项`)
