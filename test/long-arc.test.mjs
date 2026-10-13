@@ -25,7 +25,7 @@ import {
   isEligibleNarrativeEntry, resolveConversationKind, resolveConversationWeight,
   calculateLongHorizonScore, shouldTriggerLongHorizon,
   normalizeLongArcDecision, normalizeLongArcGuidance,
-  advanceLongHorizonGenerationBaseline, progressUpdatePayload,
+  advanceLongHorizonGenerationBaseline, progressUpdatePayload, longArcGuidancePrompt,
 } from '../lib/long-arc.js'
 import { conversationKindOfKey, draftFromEvent } from '../lib/script-entry.js'
 
@@ -387,6 +387,26 @@ check('progressUpdatePayload：剔除主键（更新载荷不能带主键）', (
   eq(payload.totalScore, 10, '其余字段照旧')
   eq(Object.keys(payload).sort(), ['lastGenerationEntryId', 'totalScore'], '只剩可变字段')
   eq(progressUpdatePayload(null), {}, '坏输入返回空对象')
+})
+
+check('longArcGuidancePrompt：把上游那几条边界都写进提示词', () => {
+  const full = longArcGuidancePrompt()
+  // 这几条是上游刻意写进去的护栏，掉一条都会让「催化」变成「硬塞剧情」。
+  assert.ok(full.includes('Do not optimize for drama'), '不许为戏剧性服务')
+  assert.ok(full.includes('Do not force conflict, confession, awakening'), '不强迫冲突/告白/觉醒')
+  assert.ok(full.includes('Do not return dormant merely because the first expression has not already occurred'),
+    '不能因为「还没发生」就返回 dormant')
+  assert.ok(full.includes('Never write that the character already has a new trait'), '不写「已具备新特质」')
+  assert.ok(full.includes('Do not invent past events'), '不编过去的事件')
+  assert.ok(full.includes('Use only evidenceEntryIds supplied in keyEvidence'), '只用给定的证据 id')
+  assert.ok(full.includes('Return exactly one JSON object and no Markdown'), '要求纯 JSON')
+  // 轻量档要更简短，且与非轻量档不同。
+  const lite = longArcGuidancePrompt({ tier: 'lite' })
+  assert.ok(lite.includes('Keep every field concise'), '轻量档要求每项简短')
+  assert.notEqual(lite, full, '两档应当不同')
+  // 无参数也不能抛错（`specialty?.tier` 那处最容易踩）。
+  eq(typeof longArcGuidancePrompt(undefined), 'string', '无参数也返回字符串')
+  eq(typeof longArcGuidancePrompt({}), 'string', '空对象也返回字符串')
 })
 
 console.log(`\n长线叙事引导：通过 ${passed} 项，失败 ${failed} 项`)
