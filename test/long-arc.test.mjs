@@ -24,6 +24,8 @@ import {
   DEFAULT_LONG_HORIZON_CONFIG, resolveLongHorizonConfig,
   isEligibleNarrativeEntry, resolveConversationKind, resolveConversationWeight,
   calculateLongHorizonScore, shouldTriggerLongHorizon,
+  normalizeLongArcDecision, normalizeLongArcGuidance,
+  advanceLongHorizonGenerationBaseline, progressUpdatePayload,
 } from '../lib/long-arc.js'
 import { conversationKindOfKey, draftFromEvent } from '../lib/script-entry.js'
 
@@ -279,6 +281,112 @@ check('端到端：录入标注 → 分类 → 加权（群聊半权真的生效
   eq(score.totalScore, 2.5, '0.5 + 1 + 1')
   eq(score.groupCount, 1, '一条群聊')
   eq(score.privateCount, 2, '两条私聊')
+})
+
+/* ══════════ 生成结果 → 指导载荷（三条硬约束） ══════════ */
+
+/** 一份结构完整的生成结果（可逐项删字段测「缺项即作废」）。 */
+const fullDecision = () => ({
+  decision: 'activate',
+  title: 'T',
+  premise: 'P',
+  direction: 'D',
+  emotionalCore: 'E',
+  evidenceEntryIds: [1],
+  stages: [{ id: 's1', name: '第一阶段', objective: '目标' }],
+  firstExpression: { action: 'a', example: 'e', trigger: ['t'] },
+  responseBranches: { accepted: 'a', declined: 'd', questioned: 'q' },
+})
+
+const VALID_IDS = new Set([1, 2, 3])
+
+check('normalizeLongArcDecision：缺省 decision 保守取 dormant（不写入半截指导）', () => {
+  // 上游 P2-1：从 activate 改为 dormant。模型没显式声明催化意图时不写入，
+  // 避免「本没打算催化，却产生了一段指导」。
+  const d = normalizeLongArcDecision({}, VALID_IDS)
+  eq(d.decision, 'dormant', '缺省即 dormant')
+  eq(d.payload, undefined, 'dormant 不带载荷')
+  assert.ok(d.reason.length > 0, 'dormant 要有一句理由')
+  // 非对象一律 undefined（不是「当作 dormant」——那是两回事）。
+  for (const bad of [undefined, null, 'x', 42, []]) {
+    eq(normalizeLongArcDecision(bad, VALID_IDS), undefined, `${JSON.stringify(bad)} → undefined`)
+  }
+})
+
+check('normalizeLongArcDecision：只认**真实存在**的证据 id（编的丢掉）', () => {
+  eq(normalizeLongArcDecision({ decision: 'dormant', evidenceEntryIds: [1, 99, 'x'] }, VALID_IDS).evidenceEntryIds, [1], '留下的只有合法的')
+  // 只给了编的 id → 等于没有证据 → prime/activate 作废。
+  eq(normalizeLongArcDecision({ ...fullDecision(), evidenceEntryIds: [99] }, VALID_IDS), undefined, '证据全编 → 作废')
+  eq(normalizeLongArcDecision({ ...fullDecision(), evidenceEntryIds: [1, 2, 3, 4, 5] }, new Set([1])).evidenceEntryIds, [1], '越界也过滤')
+})
+
+check('normalizeLongArcDecision：结构缺任何一项都作废（不写入半截指导）', () => {
+  for (const field of ['title', 'premise', 'direction', 'emotionalCore', 'stages', 'firstExpression', 'responseBranches']) {
+    const value = fullDecision()
+    delete value[field]
+    eq(normalizeLongArcDecision(value, VALID_IDS), undefined, `缺 ${field} → undefined`)
+  }
+  // 首次微表达的三要素也各自必需。
+  for (const sub of ['action', 'example', 'trigger']) {
+    const value = fullDecision()
+    delete value.firstExpression[sub]
+    eq(normalizeLongArcDecision(value, VALID_IDS), undefined, `首次微表达缺 ${sub} → undefined`)
+  }
+  // 阶段缺 objective 也算不成立。
+  eq(normalizeLongArcDecision({ ...fullDecision(), stages: [{ id: 's', name: 'n' }] }, VALID_IDS), undefined, '阶段缺 objective')
+})
+
+check('normalizeLongArcDecision：强度受配置压制（第一版硬约束）', () => {
+  const strong = { ...fullDecision(), intensity: 'strong' }
+  eq(normalizeLongArcDecision(strong, VALID_IDS, { intensity: 'subtle' }).payload.intensity, 'subtle', '配置没允许 → 压回 subtle')
+  eq(normalizeLongArcDecision(strong, VALID_IDS, { intensity: 'moderate' }).payload.intensity, 'strong', '配置允许 → 保留')
+  eq(normalizeLongArcDecision({ ...fullDecision(), intensity: 'weird' }, VALID_IDS, { intensity: 'strong' }).payload.intensity, 'subtle', '非法强度回 subtle')
+})
+
+check('normalizeLongArcDecision：confidence 夹紧、当前阶段不悬空、phase 随 decision', () => {
+  const hi = normalizeLongArcDecision({ ...fullDecision(), confidence: 5 }, VALID_IDS)
+  eq(hi.payload.confidence, 1, '上限夹到 1')
+  const lo = normalizeLongArcDecision({ ...fullDecision(), confidence: -3 }, VALID_IDS)
+  eq(lo.payload.confidence, 0, '下限夹到 0')
+  eq(normalizeLongArcDecision(fullDecision(), VALID_IDS).payload.confidence, 0.5, '缺省 0.5')
+  // currentStage 指向不在阶段表里的 id → 退回第一个阶段（不留悬空指针）。
+  const dangling = normalizeLongArcDecision({ ...fullDecision(), currentStage: { id: 'nope', name: 'x', purpose: 'y' } }, VALID_IDS)
+  eq(dangling.payload.currentStage.id, 's1', '退回第一个阶段')
+  eq(dangling.payload.currentStage.purpose, '目标', '顺带取该阶段的目标')
+  // prime → primed；activate → active。
+  eq(normalizeLongArcDecision({ ...fullDecision(), decision: 'prime' }, VALID_IDS).payload.developmentPhase, 'primed', 'prime → primed')
+  eq(normalizeLongArcDecision(fullDecision(), VALID_IDS).payload.developmentPhase, 'active', 'activate → active')
+  // 文本字段把换行压成空格（提示词里的多行值会破坏结构）。
+  const multiline = normalizeLongArcDecision({ ...fullDecision(), title: '上\n下' }, VALID_IDS)
+  eq(multiline.payload.title, '上 下', '换行压成空格')
+})
+
+check('normalizeLongArcGuidance：只要载荷的老接口', () => {
+  eq(normalizeLongArcGuidance(fullDecision(), VALID_IDS).title, 'T', '返回载荷')
+  eq(normalizeLongArcGuidance({}, VALID_IDS), undefined, 'dormant → undefined')
+  eq(normalizeLongArcGuidance(null, VALID_IDS), undefined, '坏输入 → undefined')
+})
+
+/* ══════════ 基线推进与更新载荷 ══════════ */
+
+check('advanceLongHorizonGenerationBaseline：消费复审窗口，条目 id 单调不减', () => {
+  const progress = { storyId: 's', totalScore: 10, lastGenerationScore: 5, lastGenerationEntryId: 7 }
+  const advanced = advanceLongHorizonGenerationBaseline(progress, 30, 4)
+  eq(advanced.totalScore, 30, '当前分数覆盖总分')
+  eq(advanced.lastGenerationScore, 30, '基线推到当前分数（这段窗口已审过，不再重复触发）')
+  eq(advanced.lastGenerationEntryId, 7, '乱序的更小 id 不让它倒退')
+  eq(advanceLongHorizonGenerationBaseline(progress, 30, 9).lastGenerationEntryId, 9, '更大的 id 正常推进')
+  assert.notEqual(advanced, progress, '返回新对象，不改原进度')
+  eq(progress.totalScore, 10, '原进度不受影响')
+})
+
+check('progressUpdatePayload：剔除主键（更新载荷不能带主键）', () => {
+  const progress = { storyId: 's', totalScore: 10, lastGenerationEntryId: 3 }
+  const payload = progressUpdatePayload(progress)
+  eq(payload.storyId, undefined, '主键被剔除')
+  eq(payload.totalScore, 10, '其余字段照旧')
+  eq(Object.keys(payload).sort(), ['lastGenerationEntryId', 'totalScore'], '只剩可变字段')
+  eq(progressUpdatePayload(null), {}, '坏输入返回空对象')
 })
 
 console.log(`\n长线叙事引导：通过 ${passed} 项，失败 ${failed} 项`)
