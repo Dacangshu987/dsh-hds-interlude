@@ -162,5 +162,39 @@ check('状态卡：maxPerDay 正常值照旧显示数字', () => {
   assert.ok(text.includes('今日已主动联系：2 / 6'))
 })
 
+/* ─────────── 长线叙事催化器的累计结果（对齐上游 longHorizon 段） ─────────── */
+
+check('状态卡：长线叙事**未启用**时不占一行', () => {
+  const text = String(renderStatus({
+    now: NOW.getTime(), zone: 'Asia/Shanghai',
+    // 即使状态里有累计结果，配置没开也不该显示。
+    state: { longHorizon: { score: 30, privateCount: 30, groupCount: 0, reason: 'first-trigger', wouldTrigger: true } },
+    config: { agency: { enabled: false } }, due: [],
+  }))
+  assert.ok(!text.includes('长线叙事'), '默认关，不该显示')
+})
+
+check('状态卡：长线叙事启用后显示加权分与判定结论', () => {
+  const textOf = (lh) => String(renderStatus({
+    now: NOW.getTime(), zone: 'Asia/Shanghai',
+    state: { longHorizon: lh },
+    config: { longHorizon: { enabled: true }, agency: { enabled: false } }, due: [],
+  }))
+  // 该触发：如实标出「生成通道未接线」，不假装已经有了一段长线指导。
+  const hit = textOf({ score: 30, privateCount: 30, groupCount: 0, reason: 'first-trigger', wouldTrigger: true })
+  assert.ok(hit.includes('加权分 30'), `应显示分数：${hit.split('\n').find(l => l.includes('长线叙事'))}`)
+  assert.ok(hit.includes('私聊 30 / 群聊 0'), '应分开显示两个来源的条数')
+  assert.ok(hit.includes('首次达标'), 'reason 应译成人话')
+  assert.ok(hit.includes('该触发'), '达标时应标出')
+  assert.ok(hit.includes('生成通道未接线'), '不假装已生成')
+  // 未达标：不该出现「该触发」。
+  const miss = textOf({ score: 5, privateCount: 5, groupCount: 0, reason: 'not-due' })
+  assert.ok(miss.includes('还没到'), '未达标')
+  assert.ok(!miss.includes('该触发'), '未达标不该标「该触发」')
+  // 还没评估过：如实说「尚未评估」，而不是显示 0 分像「算过了」。
+  const fresh = textOf(undefined)
+  assert.ok(fresh.includes('尚未评估'), '无累计器时如实标注')
+})
+
 console.log(`\n主动联系温度：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)
