@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 
 import {
   DEFAULT_LOGGING_CONFIG, resolveLoggingConfig, logPreview, describeWithPreview,
-  normalizeBlindMode, blindModeEnabled,
+  normalizeBlindMode, blindModeEnabled, silenceCommandReceipt,
 } from '../lib/logging.js'
 
 let passed = 0
@@ -176,6 +176,28 @@ check('失明模式：心跳间隔夹到 1–1440，坏值回默认 10', () => {
   eq(normalizeBlindMode({ blindMode: { healthReportMinutes: 'x' } }).healthReportMinutes, 10, '坏值回默认')
   eq(normalizeBlindMode({ blindMode: { healthReportMinutes: 30 } }).healthReportMinutes, 30, '合法值保留')
   eq(normalizeBlindMode(null).enabled, false, '坏输入安全')
+})
+
+check('回执静默：非失明时原样返回，失明时只换文本', () => {
+  const original = { kind: 'success', text: '详细回执' }
+  eq(silenceCommandReceipt(original, false), original, '非失明模式原样透传（同一个对象）')
+  const silenced = silenceCommandReceipt(original, true)
+  assert.ok(silenced.text.includes('失明模式'), '失明模式换成静默提示')
+  assert.ok(!silenced.text.includes('详细回执'), '不该泄漏原回执内容')
+})
+
+check('回执静默：**错误仍按错误返回**（否则失败会看起来像成功但没说）', () => {
+  for (const kind of ['error']) {
+    const out = silenceCommandReceipt({ kind, text: '失败了' }, true)
+    eq(out.kind, 'error', '错误 kind 必须保留')
+    assert.ok(out.text.includes('失明模式'), '文本仍换成提示')
+  }
+  // 非错误一律归为 success；缺 kind / 裸 undefined 也按 success 处理。
+  eq(silenceCommandReceipt({ text: 'x' }, true).kind, 'success', '缺 kind 按成功')
+  eq(silenceCommandReceipt(undefined, true).kind, 'success', 'undefined 安全')
+  eq(silenceCommandReceipt(null, true).kind, 'success', 'null 安全')
+  // 自定义提示可覆盖。
+  eq(silenceCommandReceipt({ kind: 'success' }, true, '自定义').text, '自定义')
 })
 
 console.log(`\n日志脱敏：通过 ${passed} 项，失败 ${failed} 项`)
