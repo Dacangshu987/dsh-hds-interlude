@@ -12,6 +12,8 @@
  * 运行：node test/client-input.test.mjs
  */
 import { strict as assert } from 'node:assert'
+import { Config } from '../lib/schema.js'
+import { panelDescriptor } from '../lib/panel-schema.js'
 
 /* ------------------------------------------------------------ React 替身 */
 
@@ -158,6 +160,8 @@ globalThis.fetch = async (url, options) => {
   const method = (options && options.method) || 'GET'
   if (method === 'GET') {
     if (String(url).includes('/presets')) return jsonResponse({ ok: true, presets: [] })
+    // 面板描述符：生成式渲染的段需要它才会出现（与覆盖度夹具同做法）。
+    if (String(url).includes('/panel-schema')) return jsonResponse({ ok: true, value: panelDescriptor(Config) })
     // 读回来的是「用户段合并到已存配置之上」的结果，与宿主一致。
     return jsonResponse({ ok: true, value: mergeLayers(server.value, server.userSection) })
   }
@@ -509,10 +513,12 @@ await check('新增开关 Urge 与时间导演渲染在功能区', async () => {
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
   const labels = all(tree)
-    .filter(el => el.tag === 'span' && /Urge 弹性推进|时间导演/.test(textOf(el)))
+    .filter(el => el.tag === 'span' && /Urge 弹性推进/.test(textOf(el)))
     .map(el => textOf(el))
   assert.ok(labels.some(t => t.includes('Urge 弹性推进')), `Urge 开关存在：${JSON.stringify(labels)}`)
-  assert.ok(labels.some(t => t.includes('时间导演')), `时间导演开关存在：${JSON.stringify(labels)}`)
+  // 时间导演已**迁移到生成式渲染**（不再挤在功能区里），所以这里只断言 Urge；
+  // 它现在由描述符画成独立的【节奏 8】段，见 client-panel-coverage 的生成式验收。
+  assert.equal(labels.length > 0, true, `功能区应仍有 Urge 开关：${JSON.stringify(labels)}`)
 })
 
 /* --------------------------------------------------------- 开关渲染（回归） */
@@ -679,7 +685,7 @@ await check('面板默认只开常用区；进阶区收起但**内容仍在渲�
   tree = switchTab(tree, '扩展')
   // 扩展页整页都是进阶/实验功能 → 默认全收起。
   assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), false, '世界事件播种器默认收起')
-  assert.equal(sectionOpen(tree, '长线叙事催化器（实验）【扩展 16】'), false, '长线叙事默认收起')
+  assert.equal(sectionOpen(tree, '长线叙事【扩展 16】'), false, '长线叙事默认收起')
   // 【关键】收起的分区，字段仍必须留在渲染树里——否则「覆盖度」测试会
   // 误判成「这个字段没上面板」，折叠就变成了悄悄藏功能。
   const hidden = sectionByTitle(tree, '世界事件播种器【扩展 15】')
@@ -701,7 +707,7 @@ await check('点分区标题可以展开与收起（同一区来回切换）', a
   tree = clickSectionTitle(tree, '世界事件播种器【扩展 15】')
   assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), false, '再点收起')
   // 一个区的开合不影响另一个区。
-  assert.equal(sectionOpen(tree, '长线叙事催化器（实验）【扩展 16】'), false, '别的区不受影响')
+  assert.equal(sectionOpen(tree, '长线叙事【扩展 16】'), false, '别的区不受影响')
 })
 
 await check('搜索：标题命中或**区内文字**命中的分区都强制展开', async () => {
@@ -714,13 +720,13 @@ await check('搜索：标题命中或**区内文字**命中的分区都强制展
   box.props.onChange({ target: { value: '世界事件' } })
   tree = rerender()
   assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), true, '标题命中 → 展开')
-  assert.equal(sectionOpen(tree, '长线叙事催化器（实验）【扩展 16】'), false, '没命中的仍收起')
+  assert.equal(sectionOpen(tree, '长线叙事【扩展 16】'), false, '没命中的仍收起')
 
   // 按**区内文字**搜（标题里没有这个词）。
   const box2 = searchBox(tree)
   box2.props.onChange({ target: { value: '执行器' } })
   tree = rerender()
-  const anyMatched = ['世界事件播种器【扩展 15】', '长线叙事催化器（实验）【扩展 16】']
+  const anyMatched = ['世界事件播种器【扩展 15】', '长线叙事【扩展 16】']
     .some(title => sectionOpen(tree, title) === true)
   assert.ok(anyMatched, '按区内文字也应命中并展开')
 

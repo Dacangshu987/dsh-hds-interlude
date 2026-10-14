@@ -405,12 +405,21 @@ check('聊天页有意愿档位（rc23）：档位 = auto，三态映射读回',
 
 const advanced = goTab('扩展')
 
-check('扩展页有长线叙事催化器（实验，对齐上游 longHorizon），且读回配置值', () => {
-  // 夹具里 enabled: true → 复选框应勾上，且条件渲染出三个控件。
-  eq(checkboxNear(advanced, '启用：累计加权叙事证据').props.checked, true, '开关读回')
-  eq(Number(controlNearLabel(advanced, '首次触发门槛').props.value), 60, 'triggerScore')
-  eq(Number(controlNearLabel(advanced, '复审增量').props.value), 120, 'reviewIncrement')
-  eq(controlNearLabel(advanced, '指导强度').props.value, 'moderate', 'intensity')
+check('生成式渲染：长线叙事（自动生成）断言**值**，且无效字段**不被画出来**', () => {
+  // 这一段已迁移到生成式渲染。两件事一起验：
+  //  ① 断言**值**（不只是存在）——路径写错会红；
+  //  ② 断言 `privateWeight` / `groupWeight` **没有**被渲染——它们在 schema 里只为
+  //     读取旧配置而存在（实际权重固定 1.0 / 0.5），由服务端 PANEL_HIDDEN 挡掉。
+  //     画出来就是假开关，而这正是本次搬迁要消灭的东西。
+  const tab = goTab('扩展')
+  const text = collectText(tab)
+  assert.ok(text.includes('长线叙事【扩展 16】'), `应有自动生成的长线叙事段：${text.slice(0, 240)}`)
+  eq(checkboxNear(tab, '启用长线叙事催化器').props.checked, true, '开关应读回 true')
+  eq(Number(controlNearLabel(tab, '加权分数门槛').props.value), 60, 'triggerScore 应读回 60')
+  eq(Number(controlNearLabel(tab, '积累多少分').props.value), 120, 'reviewIncrement 应读回 120')
+  // 隐藏字段必须一个都不出现（连说明文字都不该在）。
+  assert.ok(!text.includes('实际固定为 1.0'), 'privateWeight 不该被渲染（假开关）')
+  assert.ok(!text.includes('兼容旧配置'), '权重兼容项不该被渲染')
 })
 
 check('扩展页有日志内容脱敏两项（对齐上游 Logging），且读回配置值', () => {
@@ -684,7 +693,7 @@ check('面板段名带上游【档位 序号】编号（只标精确对应的段
   // 本仓面板是手写的，段名与上游不总是同名，所以只给**概念精确对应**的段加编号。
   const advanced = collectText(goTab('扩展'))
   assert.ok(advanced.includes('世界事件播种器【扩展 15】'), `扩展页应有世界播种器编号：${advanced.slice(0, 200)}`)
-  assert.ok(advanced.includes('长线叙事催化器（实验）【扩展 16】'), '扩展页应有长线叙事编号')
+  assert.ok(advanced.includes('长线叙事【扩展 16】'), '扩展页应有长线叙事编号')
 
   const chat = collectText(goTab('聊天'))
   assert.ok(chat.includes('QQ 机器人【必填 3】'), `聊天页应有 QQ 接入编号：${chat.slice(0, 200)}`)
