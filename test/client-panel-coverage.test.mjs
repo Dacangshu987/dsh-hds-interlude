@@ -656,6 +656,18 @@ if (saveCall) {
   })
 })
 
+check('生成式段**按页挂载**：时间导演在节奏页，长线叙事在扩展页', () => {
+  // 这条钉的是「段属于哪个页」。若统一挂在扩展页，迁移一个段就会把它挪页——
+  // 例如时间导演本属节奏页（上游【节奏 8】），跑到扩展页就是错的。
+  const rhythm = collectText(goTab('节奏'))
+  const advancedTab = collectText(goTab('扩展'))
+  assert.ok(rhythm.includes('时间导演【节奏 8】'),
+    `时间导演应在节奏页（含上游编号）：${rhythm.slice(0, 240)}`)
+  assert.ok(!advancedTab.includes('时间导演【节奏 8】'), '时间导演不该出现在扩展页')
+  assert.ok(advancedTab.includes('长线叙事【扩展 16】'), '长线叙事应在扩展页')
+  assert.ok(!rhythm.includes('长线叙事【扩展 16】'), '长线叙事不该出现在节奏页')
+})
+
 check('生成式渲染：描述符驱动画出「运行时天气」段（字段随 schema 走）', () => {
   // 这是 2b 的验收点：天气段已**从手写迁移到生成式**——面板不再为它逐字段写 JSX，
   // 而是照着服务端描述符画。以后 schema 给它加字段，界面自动多一项。

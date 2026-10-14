@@ -384,8 +384,19 @@ await check('间隔提示填 0 不该被悄悄改成 30', async () => {
 await check('开关能独立切换且落在正确的键上', async () => {
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  // 勾上「每回合都注入当前时间」（「节奏」页的第一个复选框）
-  const toggle = all(tree).find(el => el.tag === 'input' && el.props.type === 'checkbox')
+  // 按**文案**定位「每回合都注入当前时间」。
+  //
+  // 原先这里取「节奏页的第一个复选框」——生成式段改为按页挂载后，插在页首的
+  // 自动段会改变「第一个」是谁，这种依赖顺序的写法立刻就碎了。
+  // 按文案找才是不依赖实现顺序的写法（同文件的 numberBoxByLabel 也是这么做的）。
+  const label = all(tree).find(el => el.tag === 'span' && /每回合都注入当前时间/.test(textOf(el)))
+  assert.ok(label, '找不到「每回合都注入当前时间」')
+  const wrap = all(tree).find(el => {
+    const kids = el.children ?? (el.props && el.props.children)
+    return Array.isArray(kids) && kids.includes(label)
+  })
+  assert.ok(wrap, '找不到该开关所在的容器')
+  const toggle = all(wrap).find(el => el.tag === 'input' && el.props.type === 'checkbox')
   assert.ok(toggle, '找不到复选框')
   toggle.props.onChange({ target: { checked: true } })
   tree = rerender()
