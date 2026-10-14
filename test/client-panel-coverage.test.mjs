@@ -264,6 +264,12 @@ const state = {
     logging: { verbosity: 'diagnostic', logScriptPreview: true, logMessageContent: true, previewLength: 1200 },
     // 失明模式（对齐上游 BlindMode）：刻意用非默认值（关卡 + 非默认间隔）。
     blindMode: { enabled: true, healthReportMinutes: 25 },
+    // 运行时天气（生成式渲染的第一块）：刻意用**非默认值**——只断言「字段存在」
+    // 抓不到路径写错那类 bug，必须断言**值**（盲区模式那块就是这么抓到的）。
+    weather: {
+      enabled: true, latitude: 31.23, longitude: 121.47,
+      autoFromLocation: false, skipFantasyWorld: true, cadenceMinutes: 45,
+    },
   },
 }
 const { fetchImpl, calls } = makeFetch(state)
@@ -685,6 +691,7 @@ check('生成式渲染：描述符驱动画出「运行时天气」段（字段�
   // 这是 2b 的验收点：天气段已**从手写迁移到生成式**——面板不再为它逐字段写 JSX，
   // 而是照着服务端描述符画。以后 schema 给它加字段，界面自动多一项。
   const text = collectText(goTab('扩展'))
+  const text2 = goTab('扩展')
   assert.ok(text.includes('运行时天气【扩展 19】'),
     `扩展页应出现自动生成的天气段（含上游档位编号）：${text.slice(0, 300)}`)
   assert.ok(text.includes('本区由 schema 自动生成'), '应标明该段由 schema 生成')
@@ -696,6 +703,10 @@ check('生成式渲染：描述符驱动画出「运行时天气」段（字段�
   assert.ok(text.includes('观测点纬度'), `应出现纬度字段：${text.slice(0, 300)}`)
   assert.ok(text.includes('跳过天气注入'), '应出现跳过架空世界的开关')
   // 天气段的痕迹不该在别处再出现一次（手写那份已撤）。
+  // **断言值**（不只是存在）：路径写错时这里会红。
+  eq(checkboxNear(text2, '启用运行时天气').props.checked, true, '天气开关应读回 true')
+  eq(Number(controlNearLabel(text2, '观测点纬度').props.value), 31.23, '纬度应读回 31.23')
+  eq(Number(controlNearLabel(text2, '拉取间隔').props.value), 45, '拉取间隔应读回 45')
   const legacy = text.split('运行时天气【扩展 19】').length - 1
   assert.equal(legacy, 1, '天气段只应出现一次（手写那份已撤）')
 })
