@@ -75,6 +75,24 @@ check('控件类型推导：boolean→checkbox / number→number / union→selec
   assert.equal(find('im', 'dedupe').control, 'group', '深一层的对象作为整块')
 })
 
+check('字段 path 是**全路径**（带父段前缀）——前端拿它取值，错了就静默取不到', () => {
+  // 踩过的坑：`describeFields` 一开始只把 key 当 path，于是 `blindMode.enabled`
+  // 的路径变成 `enabled`，前端 `getByPath(autoDraft, 'enabled')` 永远 undefined——
+  // 控件画得出来、值是空的，而且**不报错**。被一条断言「值」的测试抓住。
+  const bm = sections.find((s) => s.key === 'blindMode')
+  assert.deepEqual(bm.fields.map((f) => f.path), ['blindMode.enabled', 'blindMode.healthReportMinutes'])
+  // 嵌套两层也要带上全部前缀。
+  const nested = sections.find((s) => s.key === 'im').fields.find((f) => f.key === 'dedupe')
+  assert.deepEqual(nested.fields.map((f) => f.path), ['im.dedupe.ttlMinutes', 'im.dedupe.maxEntries'])
+  // 每条字段的 path 都必须以它所在段的 key 开头。
+  for (const section of sections) {
+    for (const f of section.fields) {
+      assert.ok(f.path.startsWith(section.key + '.') || f.path === section.key,
+        `${section.key} 下的 ${f.key} 路径没带前缀：${f.path}`)
+    }
+  }
+})
+
 check('字段带出默认值，且默认值与 schema 一致（不是猜的）', () => {
   const weather = sections.find((s) => s.key === 'weather')
   const byKey = Object.fromEntries(weather.fields.map((f) => [f.key, f]))

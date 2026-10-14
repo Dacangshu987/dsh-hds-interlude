@@ -417,8 +417,10 @@ check('扩展页有日志内容脱敏两项（对齐上游 Logging），且读�
 })
 
 check('扩展页有失明模式（对齐上游 BlindMode），且读回配置值', () => {
-  // 夹具里 enabled: true → 复选框勾上，且条件渲染出心跳间隔。
-  eq(checkboxNear(advanced, '失明模式：静默日志与命令回执').props.checked, true, '开关读回')
+  // 这一段已**迁移到生成式渲染**（2b 的第二块）：控件由服务端描述符画出，
+  // 所以标签不再是手写文案，而是 **schema 里的 description**——这正是
+  // 「面板与 schema 不再漂移」的体现：改 schema 的说明文字，界面跟着变。
+  eq(checkboxNear(advanced, '启用沉浸运行').props.checked, true, '开关读回')
   eq(Number(controlNearLabel(advanced, '健康心跳间隔').props.value), 25, 'healthReportMinutes')
 })
 check('扩展页有世界事件播种器（rc23）并读回配置值', () => {
