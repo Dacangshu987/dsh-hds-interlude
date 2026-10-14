@@ -656,6 +656,20 @@ if (saveCall) {
   })
 })
 
+check('生成式渲染：主动联系（首个**非扩展页**迁移）按页挂载且断言值', () => {
+  // 这是第一个迁到非扩展页的段——用来验证「按页挂载」在真实迁移里成立。
+  const rhythm = collectText(goTab('节奏'))
+  assert.ok(rhythm.includes('主动联系'), `节奏页应有自动生成的主动联系段：${rhythm.slice(0, 240)}`)
+  // 否定断言要用**只属于该段**的文案：「主动联系」这四个字在别处的说明文字里也有，
+  // 拿它做否定断言会误报（这条我自己刚踩了一次）。
+  assert.ok(!collectText(goTab('扩展')).includes('允许在休息时段主动开口'),
+    '主动联系的字段不该出现在扩展页')
+  // 断言**值**：夹具里 duringSleep 刻意是 true（默认 false），读错就露馅。
+  eq(checkboxNear(goTab('节奏'), '允许在休息时段主动开口').props.checked, true, 'duringSleep 应读回 true')
+  // 生成式比原手写更完整：原先手写只覆盖 10 个字段里的 7 个，现在 10 个都在。
+  eq(!!controlNearLabel(goTab('节奏'), '模糊承诺'), true, '原先手写没覆盖的字段现在也在')
+})
+
 check('生成式段**按页挂载**：时间导演在节奏页，长线叙事在扩展页', () => {
   // 这条钉的是「段属于哪个页」。若统一挂在扩展页，迁移一个段就会把它挪页——
   // 例如时间导演本属节奏页（上游【节奏 8】），跑到扩展页就是错的。
@@ -741,7 +755,12 @@ check('默认展开白名单的键**必须都是面板里真实存在的区 key*
   const literal = [...src.matchAll(/style: S\.section, className: 'hdsi-section', key: '([^']+)'/g)].map(m => m[1])
   const groups = (src.match(/var GROUPS = \[([^\]]+)\]/) || [, ''])[1]
     .split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean)
-  const panelKeys = new Set([...literal, ...groups])
+  // **生成式段的 key 也算面板段**：它们不在源码里以字面量出现，运行时由描述符产生，
+  // 但它们的 key 就是 schema 键名（ASCII）。漏掉这一项，白名单里写 ASCII key
+  // （如 `proactive: true`）就永远校验不到——而那正是迁移之后的主要形态。
+  const autoRendered = (src.match(/var AUTO_RENDERED_SECTIONS = \[([^\]]+)\]/) || [, ''])[1]
+    .split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean)
+  const panelKeys = new Set([...literal, ...groups, ...autoRendered])
 
   // 白名单里列出的键。
   const block = src.slice(
@@ -749,7 +768,8 @@ check('默认展开白名单的键**必须都是面板里真实存在的区 key*
     src.indexOf('/** 本地记住上次选的 Tab'),
   )
   assert.ok(block.length > 0, '应能定位 DEFAULT_OPEN_SECTIONS')
-  const listed = [...block.matchAll(/(?:^|[,{\s])([\u4e00-\u9fff]+):\s*(?:true|false)/g)].map(m => m[1])
+  // 键名允许 ASCII：迁移到生成式之后，白名单里的 key 就是 schema 键名。
+  const listed = [...block.matchAll(/(?:^|[,{\s])([\w\u4e00-\u9fff]+):\s*(?:true|false)/g)].map(m => m[1])
 
   assert.ok(listed.length >= 10, `白名单应列出足够多的区，实际 ${listed.length}`)
   const unknown = listed.filter(k => !panelKeys.has(k))

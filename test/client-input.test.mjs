@@ -356,7 +356,9 @@ await check('同一帧里改两个标量（时区 + 间隔），两处都要留�
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
   const tz = byPlaceholder(tree, 'Asia/Shanghai')
-  const num = all(tree).find(el => el.props && el.props.type === 'number')
+  // 按**文案**找间隔输入框，而不是「节奏页第一个数字框」——生成式段按页挂载后
+  // 页首是自动段，取第一个必然找错（这类依赖顺序的写法已连续踩了两次）。
+  const num = numberBoxByLabel(tree, '间隔提示（分钟）')
   assert.ok(tz && num, '找不到时区/数字输入框')
   // 同一帧内连续两次标量改动，中间不重渲染。
   type(tz, 'Europe/London')
@@ -373,8 +375,9 @@ console.log('\n面板输入：数字与开关')
 await check('间隔提示填 0 不该被悄悄改成 30', async () => {
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  const box = byPlaceholder(tree, undefined) && all(tree).find(el => el.props && el.props.type === 'number')
-  assert.ok(box, '找不到数字输入框')
+  // 同上：按文案定位，不依赖控件顺序。
+  const box = numberBoxByLabel(tree, '间隔提示（分钟）')
+  assert.ok(box, '找不到间隔输入框')
   type(box, '0')
   tree = rerender()
   await save(tree)
