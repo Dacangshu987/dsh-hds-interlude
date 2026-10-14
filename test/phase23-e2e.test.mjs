@@ -40,7 +40,7 @@ const check = async (label, fn) => {
 console.log('Phase 2/3 端到端')
 
 /** 起一个真插件实例。events 会作为会话日志（供记账）。 */
-async function boot({ events = [], statePatch = {}, keepState = false, bindIm = false, extraSessions = [], transport = null } = {}) {
+async function boot({ events = [], statePatch = {}, keepState = false, bindIm = false, extraSessions = [], transport = null, configPatch = {} } = {}) {
   // keepState：保留上一次写下的状态文件，用于「盘上的事实能否被读回来」这类用例。
   // 默认清盘——多数用例需要一个干净的起点，残留会串台。
   if (!keepState) fs.rmSync(path.join(TEST_HOME, 'hds-interlude'), { recursive: true, force: true })
@@ -122,6 +122,8 @@ async function boot({ events = [], statePatch = {}, keepState = false, bindIm = 
     timeZone: 'Asia/Shanghai',
     runtime: { restWindows: [] },
     ...(bindIm ? { im: { enabled: true, bots: [{ botId: 'qq_test', appId: 'test-app', secretRef: 'X', alias: '', agentPreset: PRESET }] } } : {}),
+    // 逐用例覆盖点（如验证「只写新键名」时插件是否照样认得）。
+    ...configPatch,
   }))
   if (fiber && typeof fiber.then === 'function') await fiber
 
@@ -745,6 +747,48 @@ await check('面板描述符路由：GET 返回可渲染结构，且**覆盖所�
   })
   assert.equal(code, 405, '非 GET 应 405')
   await ctx.stop?.()
+})
+
+/* ───────── 配置改名兼容：在**真启动**下验证两种写法等价 ───────── */
+
+await check('配置改名兼容：只写 storyDefaults 时，设置路由把 story 也填上（且两值一致）', async () => {
+  // 这条是改 schema 键名前的**放行条件**：单测只能证明函数算得对，证明不了
+  // 「插件运行时真的走了那条归一化」。
+  //
+  // 判据用设置路由返回的配置——它与我接入 apply 入口的是**同一个**归一化函数，
+  // 而且面板读配置走的正是这条路。
+  //
+  // 我第一版用启动日志里的「设定=已填」做判据，被**反证**打掉了：schema 的 story
+  // 带默认值（默认角色名等），所以「没配」也显示已填——那个判据没有区分力。
+  const story = { character: { name: '测试角色', profile: '蓝发' }, plot: { style: '日常' } }
+  const readSettings = async (configPatch) => {
+    const { ctx, routes } = await boot({ events: [], configPatch })
+    const route = routes.get('/api/hds-interlude/settings')
+    let payload = null
+    await route({ method: 'GET', url: '/api/hds-interlude/settings' },
+      { writeHead() {}, end(body) { payload = body ? JSON.parse(body) : null } })
+    await ctx.stop?.()
+    return payload && payload.value
+  }
+
+  const viaNew = await readSettings({ storyDefaults: story })
+  assert.equal(viaNew.story?.character?.name, '测试角色', '只写新名时，旧名 story 应被填上')
+  assert.equal(viaNew.storyDefaults?.character?.name, '测试角色', '新名本身也在')
+
+  const viaOld = await readSettings({ story })
+  assert.equal(viaOld.story?.character?.name, '测试角色', '只写旧名时照常可用')
+  assert.equal(viaOld.storyDefaults?.character?.name, '测试角色', '旧名也应把新名填上')
+  // 【本次发现的缺陷】只写新名时，story 的值是**透传原文**——因为 storyDefaults 还不在
+  // schema 里，所以没走 schemastery 的解析（不填默认值、不补全形状）。
+  // 而只写旧名时，story 是**解析后**的（含默认值）。
+  //
+  // 也就是说：把新名「当作兼容别名透传」是不够的——下游拿到的是两种不同形状。
+  // 所以下一步（真正改名）不是可选项：**必须让 schema 认识 storyDefaults**，
+  // 两个名字才会都经过解析、形状一致。这条断言就是在钉住这个事实。
+  const oldResolved = viaOld.story && viaOld.story.plot && Object.keys(viaOld.story.plot).length > 1
+  const newRaw = viaNew.story && viaNew.story.plot && Object.keys(viaNew.story.plot).length === 1
+  assert.ok(oldResolved, '只写旧名时 story 应是**解析后**的（plot 被补全）')
+  assert.ok(newRaw, '只写新名时目前是**透传**的（这正是下一步要修的地方）')
 })
 
 /* ───────── 共同作品：端到端（创建 → 写手产出 → 用户接受） ───────── */
