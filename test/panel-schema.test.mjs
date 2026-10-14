@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import { Config } from '../lib/schema.js'
 import {
   describeConfig, planPanel, panelDescriptor, autoSections,
-  getAt, setAt, mergeInto, PANEL_SECTIONS, UPSTREAM_SECTION_ORDER,
+  getAt, setAt, mergeInto, hiddenReasonFor, PANEL_HIDDEN, PANEL_SECTIONS, UPSTREAM_SECTION_ORDER,
 } from '../lib/panel-schema.js'
 
 let passed = 0
@@ -91,6 +91,41 @@ check('字段 path 是**全路径**（带父段前缀）——前端拿它取值
         `${section.key} 下的 ${f.key} 路径没带前缀：${f.path}`)
     }
   }
+})
+
+check('PANEL_HIDDEN：每条登记都必须命中真实 schema 路径（否则会静默解除隐藏）', () => {
+  // 这条很要紧：登记表是按**路径字符串**写的。schema 一改键名（第 3 阶段就要做），
+  // 对应登记就变成死条目——而失效是**静默**的：那个字段会重新出现在生成式面板上，
+  // 变成一个假开关，没有任何地方会报错。
+  const leaves = []
+  const walk = (node, prefix) => {
+    if (!node?.dict) return
+    for (const [key, child] of Object.entries(node.dict)) {
+      const path = prefix ? prefix + '.' + key : key
+      if (child?.dict) walk(child, path)
+      else leaves.push(path)
+    }
+  }
+  walk(Config, '')
+  const dead = Object.keys(PANEL_HIDDEN).filter((key) => (
+    key.endsWith('.') ? !leaves.some((l) => l.startsWith(key)) : !leaves.includes(key)
+  ))
+  assert.deepEqual(dead, [], `这些登记已失效（对应字段不存在了）：${JSON.stringify(dead)}`)
+})
+
+check('PANEL_HIDDEN：命中即标记 hidden 并带上理由；未登记的不标记', () => {
+  const sections2 = describeConfig(Config)
+  const lh = sections2.find((s) => s.key === 'longHorizon')
+  const byKey = Object.fromEntries(lh.fields.map((f) => [f.key, f]))
+  assert.equal(byKey.privateWeight.hidden, '上游固定 1.0（权重契约），配置不生效')
+  assert.equal(byKey.groupWeight.hidden !== undefined, true)
+  assert.equal(byKey.enabled.hidden, undefined, '有效字段不该被隐藏')
+  // 前缀登记：整个 agency 段都隐藏。
+  const agency = sections2.find((s) => s.key === 'agency')
+  assert.ok(agency.fields.length > 0)
+  assert.ok(agency.fields.every((f) => f.hidden), 'agency. 是前缀登记，应全部隐藏')
+  // 未登记的段不受影响。
+  assert.equal(hiddenReasonFor('weather.latitude'), undefined)
 })
 
 check('字段带出默认值，且默认值与 schema 一致（不是猜的）', () => {

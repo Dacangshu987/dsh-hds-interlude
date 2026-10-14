@@ -18,7 +18,7 @@
 import { strict as assert } from 'node:assert'
 import fs from 'node:fs'
 import { Config as ConfigSchema } from '../lib/schema.js'
-import { panelDescriptor, mergeInto } from '../lib/panel-schema.js'
+import { panelDescriptor, mergeInto, PANEL_HIDDEN } from '../lib/panel-schema.js'
 
 /* ---------------------------------------------------------------- 捕获模块 */
 
@@ -587,56 +587,16 @@ if (saveCall) {
    *
    * 前缀写法：`im.worldSeeder.` 表示该前缀下所有字段。
    */
-  const NOT_EXPOSED = {
-    // 宿主层开关：由 DSH 的插件启停承担，插件面板不再重复给一个开关。
-    'enabled': '由宿主插件启停承担',
-    // 旧字段名/内部机制：面板只暴露当前规范名，避免同时出现两个同名开关。
-    'im.logLevel': '旧别名，面板用顶层 logLevel',
-    'im.worldSeeder.': '旧嵌套别名，面板用顶层 worldSeeder',
-    'im.botId_legacy': '旧字段名，面板用 im.bots',
-    'im.targetId': '旧单目标字段，面板用 im.bots',
-    // 集成细节：改了只会把通道弄坏，不是用户该调的旋钮。
-    'im.sayTool': '工具名内部约定',
-    'im.imageTool': '工具名内部约定',
-    'im.exposeService': '兼容出口开关（默认不占用该服务名）',
-    'im.migrateLegacyBindings': '一次性迁移开关',
-    'im.autoDiscover': '自动发现机制内部',
-    'im.botCommands': 'Bot 命令开关内部',
-    'im.markdownSupport': '平台能力探测结果',
-    'im.waitForTurnMs': '回合等待超时内部',
-    'im.timeoutMs': '投递超时内部',
-    'im.keepPassive': '被动回复窗口内部',
-    'im.dedupe.': '去重窗口容量内部',
-    'im.autoCreateSession': '标准功能（默认开），描述里已注明改 yaml',
-    // 更多旧嵌套别名：面板暴露的是顶层规范名或新名，避免出现两个同名开关。
-    'im.group.enabled': '旧嵌套别名，面板用顶层群聊开关',
-    'im.specialization.mode': '旧嵌套别名，面板用顶层 specialization',
-    'im.specialization.modelProbe': '旧嵌套别名，面板用顶层 specialization',
-    'im.chunking.enabled': '旧别名，面板用 im.chunking.splitReplyMessages',
-    // 高级调参：默认值已经调好，暴露出来只会让人误调；需要时改 yaml。
-    'agency.': '高级调参（沿用默认）',
-    'alterSystem.': '高级调参（沿用默认）',
-    'schedulePreplan.': '高级调参（沿用默认）',
-    'urge.advanced.': '高级调参（沿用默认）',
-    'urge.frequency': '高级调参（沿用默认）',
-    'urge.proactiveWillingnessThreshold': '高级调参（沿用默认）',
-    // 冲突键：world 是同一个键，schema 的 union 只接受字符串或对象其一，
-    // 面板按规范的对象形态读写。
-    'story.world': '与对象形态同键，面板按对象读写',
-    // 尚未接线的上游同名项：留着是为了与上游配置对齐，进来之前不该给用户一个假开关。
-    'story.storyTimezone': '上游同名项，本仓统一用顶层 timeZone（尚未接线）',
-    'runtime.userMessageDebounceSeconds': '本版本不生效：连输入的合并由 DSH 宿主处理',
-    // 上游固定值：这两项在 schema 里只为**读取旧配置**而存在，
-    // 实际权重固定 1.0 / 0.5（隐私/关系权重契约）。给它们输入框等于假开关。
-    'longHorizon.privateWeight': '上游固定 1.0（权重契约），配置不生效',
-    'longHorizon.groupWeight': '上游固定 0.5（权重契约），配置不生效',
-    // 终端渲染项：DSH 的日志由宿主 logger 输出，插件无法控制 ANSI 颜色、
-    // 布局与颜文字——给控件只会是一个不生效的开关。
-    'logging.format': '宿主 logger 决定布局，插件不控制',
-    'logging.colors': '宿主 logger 决定着色，插件不控制',
-    'logging.colorTheme': '宿主 logger 决定配色，插件不控制',
-    'logging.kaomoji': '宿主 logger 决定前缀，插件不控制',
-  }
+  /*
+   * 「不渲染」登记**不再写在这里**——它已搬到服务端 `lib/panel-schema.js` 的
+   * `PANEL_HIDDEN`（单一来源）。
+   *
+   * 为什么必须搬：这张表原先只在测试里，服务端描述符不知道它。于是把某段交给
+   * 生成式渲染时，生成器会把那些**刻意不给控件**的字段全画出来——比如
+   * `longHorizon.privateWeight`（实际权重固定 1.0，给输入框就是假开关）。
+   * 现在描述符自带 `hidden` 标记：生成器跳过、测试也读同一份，两边不可能各说各话。
+   */
+  const NOT_EXPOSED = PANEL_HIDDEN
   const isAllowed = (path) => Object.keys(NOT_EXPOSED).some((key) => (
     key.endsWith('.') ? path.startsWith(key) : path === key
   ))
