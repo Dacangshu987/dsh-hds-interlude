@@ -292,5 +292,43 @@ check('去重视野：planWorldSeederSweep 输出 scheduledSummaries，且与注
   assert.deepEqual(plan.scheduledSummaries, ['还在排期的事件'], '排期中必须单独列出')
 })
 
+/* ───────── 天气护栏与 subjects 重叠去重（rc52） ───────── */
+
+check('天气护栏：实况天气接管时天气类事件一律弃；**没开时不拦**', () => {
+  // 为什么需要这条：实况天气已由天气服务注入，播种器再产「明天下大雨」，
+  // 剧情里就有两个互相矛盾的天气来源。上游口径是宁可错杀。
+  const guarded = { ...BASE, weatherGuard: true }
+  const at = new Date(NOW.getTime() + 3 * 3600_000)
+  assert.equal(validateSeedEvent(draft({ summary: '明天下大雨，出门记得带伞', occursAt: at }), guarded),
+    'weather-guard')
+  assert.equal(validateSeedEvent(draft({ summary: '气温骤降，窗玻璃上起了雾', occursAt: at }), guarded),
+    'weather-guard', '口语变体也命中')
+  assert.equal(validateSeedEvent(draft({ summary: '室友小鹿点了炸鸡，分了她一半', occursAt: at }), guarded),
+    undefined, '非天气事件不受影响')
+  // 【关键】没开护栏时同一条要放行——否则等于顺手把播种器的天气能力删了。
+  assert.equal(validateSeedEvent(draft({ summary: '明天下大雨，出门记得带伞', occursAt: at }), BASE),
+    undefined, '未开启护栏不得拦截')
+})
+
+check('subjects 重叠去重：同一 NPC 换措辞也算重复（bigram 抓不到的那种）', () => {
+  const at = new Date(NOW.getTime() + 3 * 3600_000)
+  const recentAt = new Date(NOW.getTime() + 6 * 3600_000)
+  const input = { ...BASE, recentSubjects: [['小鹿', '炸鸡']], recentOccursAt: [recentAt] }
+  // 措辞完全不同（bigram 相似度极低），但 subjects 命中同一个 NPC → 判重。
+  assert.equal(validateSeedEvent(draft({ summary: '楼下有人拎着外卖袋按门铃', subjects: ['小鹿'], occursAt: at }), input),
+    'duplicate')
+  // 时间差超过 24 小时 → 不算「换皮再来一遍」，放行。
+  assert.equal(validateSeedEvent(draft({ summary: '楼下有人拎着外卖袋按门铃', subjects: ['小鹿'], occursAt: at }), {
+    ...input, recentOccursAt: [new Date(NOW.getTime() + 30 * 3600_000)],
+  }), undefined, '时间窗不接近就不算重复')
+  // subjects 不重叠 → 放行。
+  assert.equal(validateSeedEvent(draft({ summary: '室友换了新的猫粮牌子', subjects: ['老王'], occursAt: at }), input),
+    undefined)
+  // 没给时间数据时：只按 subjects 判重（宁可严一点）。
+  assert.equal(validateSeedEvent(draft({ summary: '楼下有人拎着外卖袋按门铃', subjects: ['小鹿'], occursAt: at }), {
+    ...BASE, recentSubjects: [['小鹿']],
+  }), 'duplicate')
+})
+
 console.log(`\n世界事件播种器：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)
