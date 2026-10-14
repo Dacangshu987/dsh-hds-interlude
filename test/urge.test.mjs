@@ -45,7 +45,10 @@ ok('resolveUrgeConfig：默认 medium 档参数与上游一致', () => {
   assert.deepEqual(c.slow, [110, 130])
   assert.equal(c.willingness, 0.4)
   assert.equal(c.threshold, 0.75)
-  assert.equal(c.halfLife, 45)
+  assert.equal(c.halfLife, 90)
+  // rc52 乘法模型的两个倍率键。
+  assert.equal(c.activeMultiplier, 1.4)
+  assert.equal(c.restMultiplier, 0.6)
 })
 
 ok('resolveUrgeConfig：high/low 档默认值', () => {
@@ -224,14 +227,57 @@ ok('urgeBurstActive：TTL 内且预算未用尽', () => {
 
 /* ------------------------------------------------------------ ⑥ planUrge */
 
-ok('planUrge：休息窗口 → slow 档且清掉爆发', () => {
+ok('planUrge：无节奏数据时的休息窗口 → restMultiplier 兜底（不再替换间隔）', () => {
+  // rc52 改了语义：休息窗口**不再抢占**通道、也不再取 max(rest, suggested)，
+  // 而是降级成普通通道里的一个**乘法因子**。所以断言从「等于休息分钟数」
+  // 变成「比基础间隔更长」——倍率 0.6 < 1 表示「休息时推得更慢」。
   const now = Date.now()
   const c = resolveUrgeConfig({ frequency: 'medium' })
-  const state = normalizeUrgeState({ version: 1, buckets: [], burst: { participantId: 'u1', started: now, used: 0 } }, now)
-  const { state: next, minutes, reason } = planUrge(state, now, c, 30, false, () => 0)
-  assert.equal(reason, 'rest-window')
-  assert.ok(minutes >= 30, '休息分钟数不小于剩余休息')
-  assert.equal(next.burst, undefined)
+  const state = normalizeUrgeState({ version: 1, buckets: [] }, now)
+  const plain = planUrge(state, now, c, 0, false, () => 0)
+  const resting = planUrge(state, now, c, 30, false, () => 0)
+  assert.equal(resting.reason, 'rest-window-fallback')
+  assert.ok(resting.minutes > plain.minutes, `休息应更慢：休息 ${resting.minutes} vs 平常 ${plain.minutes}`)
+})
+
+ok('planUrge：有节奏数据 → 按五档倍率走（reason 带档位名）', () => {
+  const now = Date.now()
+  const c = resolveUrgeConfig({ frequency: 'medium' })
+  const state = normalizeUrgeState({ version: 1, buckets: [] }, now)
+  const focused = planUrge(state, now, c, 0, false, () => 0, { attention: 'phone-focused' })
+  const asleep = planUrge(state, now, c, 0, false, () => 0, { attention: 'asleep' })
+  assert.equal(focused.reason, 'rhythm:phone-focused')
+  assert.equal(asleep.reason, 'rhythm:asleep')
+  // 盯手机（1.4）比睡觉（0.15）推得快得多。
+  assert.ok(focused.minutes < asleep.minutes, `盯手机应更快：${focused.minutes} vs ${asleep.minutes}`)
+})
+
+ok('planUrge：节奏数据**过期**时退回兜底，不按陈旧档位算', () => {
+  // 上游专门加了这条：节奏过期（stale）若不挡，档位会「永久新鲜」，
+  // 于是一个早就失效的「phone-focused」会永远让推进保持最密。
+  const now = Date.now()
+  const c = resolveUrgeConfig({ frequency: 'medium' })
+  const state = normalizeUrgeState({ version: 1, buckets: [] }, now)
+  const stale = planUrge(state, now, c, 0, false, () => 0, { attention: 'phone-focused', stale: true })
+  assert.equal(stale.reason, 'conversation-density-decay', '过期档位不参与计算')
+  const unknown = planUrge(state, now, c, 0, false, () => 0, { attention: '瞎写的档位' })
+  assert.equal(unknown.reason, 'conversation-density-decay', '没收录的档位也不参与')
+})
+
+ok('planUrge：乘法模型——节奏倍率**乘进**间隔，且不再被 hot 档截断', () => {
+  // 旧版是线性插值 `idle - 密度 × (idle - hot)`：密度拉满时结果**正好等于 hot**
+  // （正常通道被 hot 档夹住）。上游 rc52 改成乘法，hot 只留作 burst 的下限参考，
+  // 正常通道不再被它截断——所以这里要钉「结果 = 基础 ÷ 倍率」这条乘法律，
+  // 而不是「比 hot 更快」（那反而会失败：35 ÷ 1.4 = 25 > 10）。
+  const now = Date.now()
+  const c = resolveUrgeConfig({ frequency: 'medium' })
+  const state = normalizeUrgeState({ version: 1, buckets: [] }, now)
+  const plain = planUrge(state, now, c, 0, false, () => 0)
+  const focused = planUrge(state, now, c, 0, false, () => 0, { attention: 'phone-focused' })
+  // 基础取 idle 档下限 35；phone-focused 倍率 1.4 → 25。
+  assert.equal(plain.minutes, c.idle[0], '无加成时就是 idle 档下限')
+  assert.equal(focused.minutes, Math.max(1, c.idle[0] / 1.4), '节奏倍率乘进间隔（除法形式）')
+  assert.notEqual(focused.minutes, c.hot[0], '不再被 hot 档截断')
 })
 
 ok('planUrge：慢速脚本 → script-slow', () => {
