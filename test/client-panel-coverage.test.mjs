@@ -18,6 +18,7 @@
 import { strict as assert } from 'node:assert'
 import fs from 'node:fs'
 import { Config as ConfigSchema } from '../lib/schema.js'
+import { panelDescriptor } from '../lib/panel-schema.js'
 
 /* ---------------------------------------------------------------- 捕获模块 */
 
@@ -94,6 +95,8 @@ function makeFetch(state) {
     calls.push(record)
     if (url.includes('/presets')) return json({ ok: true, presets: [] })
     if (url.includes('/status')) return json({ ok: true })
+    // 面板描述符：服务端算好的 schema 投影（面板据此自动生成标准段）。
+    if (url.includes('/panel-schema')) return json({ ok: true, value: panelDescriptor(ConfigSchema) })
     if (!options.method || options.method === 'GET') return json({ ok: true, value: state.config })
     const payload = JSON.parse(options.body ?? '{}')
     record.payload = payload
@@ -645,7 +648,22 @@ if (saveCall) {
     const stale = [...PENDING].filter(p => payloadPaths.has(p))
     eq(stale, [], `这些已经上了面板，应从待暴露清单移除：${JSON.stringify(stale)}`)
   })
-  console.log(`\n[核对] schema 叶子 ${schemaPaths.length}；已上界面 ${schemaPaths.length - uncovered.length}；`
+  check('生成式渲染：描述符驱动画出「运行时天气」段（字段随 schema 走）', () => {
+  // 这是 2b 的验收点：天气段已**从手写迁移到生成式**——面板不再为它逐字段写 JSX，
+  // 而是照着服务端描述符画。以后 schema 给它加字段，界面自动多一项。
+  const text = collectText(goTab('扩展'))
+  assert.ok(text.includes('运行时天气【扩展 19】'),
+    `扩展页应出现自动生成的天气段（含上游档位编号）：${text.slice(0, 300)}`)
+  assert.ok(text.includes('本区由 schema 自动生成'), '应标明该段由 schema 生成')
+  // 字段说明来自 schema：控件按类型画出来（布尔→复选、数字→数字框）。
+  assert.ok(text.includes('观测点纬度'), `应出现纬度字段：${text.slice(0, 300)}`)
+  assert.ok(text.includes('跳过天气注入'), '应出现跳过架空世界的开关')
+  // 天气段的痕迹不该在别处再出现一次（手写那份已撤）。
+  const legacy = text.split('运行时天气【扩展 19】').length - 1
+  assert.equal(legacy, 1, '天气段只应出现一次（手写那份已撤）')
+})
+
+console.log(`\n[核对] schema 叶子 ${schemaPaths.length}；已上界面 ${schemaPaths.length - uncovered.length}；`
     + `未暴露 ${uncovered.filter(isAllowed).length}（已登记理由）；待暴露 ${uncovered.filter(isPending).length}`)
 }
 
