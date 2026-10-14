@@ -18,7 +18,7 @@
 import { strict as assert } from 'node:assert'
 import fs from 'node:fs'
 import { Config as ConfigSchema } from '../lib/schema.js'
-import { panelDescriptor } from '../lib/panel-schema.js'
+import { panelDescriptor, mergeInto } from '../lib/panel-schema.js'
 
 /* ---------------------------------------------------------------- 捕获模块 */
 
@@ -648,13 +648,48 @@ if (saveCall) {
     const stale = [...PENDING].filter(p => payloadPaths.has(p))
     eq(stale, [], `这些已经上了面板，应从待暴露清单移除：${JSON.stringify(stale)}`)
   })
-  check('生成式渲染：描述符驱动画出「运行时天气」段（字段随 schema 走）', () => {
+  check('内联的 mergeDeep 与 node 侧 mergeInto **逐例一致**（防两份实现漂移）', () => {
+  // 前端无法 require 本地文件，所以 mergeDeep 是一份**内联副本**；
+  // 而 panel-schema.js 的 mergeInto 才是有单测的参考实现。
+  // 两份实现分处两地、各自演化——这正是本仓反复踩过的坑（同一个东西写两遍）。
+  // 所以拿一组边界逐例比对：哪天有人只改了一边，这里立刻红。
+  const clientMerge = mod.__mergeDeep
+  assert.equal(typeof clientMerge, 'function', '客户端应导出 __mergeDeep 供比对')
+  const cases = [
+    [{ a: { x: 1, y: 2 } }, { a: { y: 9 } }],
+    [{ a: { x: 1 }, b: 2 }, { a: { z: 3 }, c: 4 }],
+    [{ list: [1, 2, 3] }, { list: [9] }],
+    [{ list: [{ a: 1 }] }, { list: [{ b: 2 }] }],
+    [{ a: 42 }, { a: { b: 1 } }],
+    [{ a: { b: 1 } }, { a: 42 }],
+    [{}, { a: { b: { c: 1 } } }],
+    [{ a: { b: { c: 1 } } }, {}],
+    [undefined, { a: 1 }],
+    [{ a: 1 }, undefined],
+    [{ a: null }, { a: { b: 1 } }],
+    [{ a: { b: 1 } }, { a: null }],
+  ]
+  cases.forEach(([base, patch], i) => {
+    assert.deepEqual(clientMerge(base, patch), mergeInto(base, patch),
+      `第 ${i} 例结果不一致：base=${JSON.stringify(base)} patch=${JSON.stringify(patch)}`)
+    // 顺带钉一条语义：不得改动入参（React 靠引用判等）。
+    const baseSnapshot = JSON.stringify(base)
+    clientMerge(base, patch)
+    assert.equal(JSON.stringify(base), baseSnapshot, `第 ${i} 例改动了入参`)
+  })
+})
+
+check('生成式渲染：描述符驱动画出「运行时天气」段（字段随 schema 走）', () => {
   // 这是 2b 的验收点：天气段已**从手写迁移到生成式**——面板不再为它逐字段写 JSX，
   // 而是照着服务端描述符画。以后 schema 给它加字段，界面自动多一项。
   const text = collectText(goTab('扩展'))
   assert.ok(text.includes('运行时天气【扩展 19】'),
     `扩展页应出现自动生成的天气段（含上游档位编号）：${text.slice(0, 300)}`)
   assert.ok(text.includes('本区由 schema 自动生成'), '应标明该段由 schema 生成')
+  // 折叠标记紧贴在标题前 —— 这条证明自动段**也走了 collapsibleSection**
+  // （包装在 buildSections 里统一做，所以它自动获得了折叠与字段搜索）。
+  assert.ok(text.includes('▸运行时天气【扩展 19】') || text.includes('▾运行时天气【扩展 19】'),
+    `自动段应带折叠标记（说明它参与了折叠/搜索）：${text.slice(0, 200)}`)
   // 字段说明来自 schema：控件按类型画出来（布尔→复选、数字→数字框）。
   assert.ok(text.includes('观测点纬度'), `应出现纬度字段：${text.slice(0, 300)}`)
   assert.ok(text.includes('跳过天气注入'), '应出现跳过架空世界的开关')
