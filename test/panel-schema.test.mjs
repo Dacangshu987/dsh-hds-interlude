@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 
 import { Config } from '../lib/schema.js'
 import {
-  describeConfig, planPanel, PANEL_SECTIONS, UPSTREAM_SECTION_ORDER,
+  describeConfig, planPanel, panelDescriptor, PANEL_SECTIONS, UPSTREAM_SECTION_ORDER,
 } from '../lib/panel-schema.js'
 
 let passed = 0
@@ -110,6 +110,44 @@ check('上游段顺序表包含本仓尚未实现的段（差距是显式的，�
   for (const key of ['model', 'onebot', 'browser', 'qzone', 'sharedStory', 'chatActions']) {
     assert.ok(UPSTREAM_SECTION_ORDER.includes(key), `${key} 应留在上游顺序表里`)
   }
+})
+
+/* ───────── 服务端描述符（发给前端的那份） ───────── */
+
+check('panelDescriptor：**可 JSON 传输**（前端要跨进程拿它）', () => {
+  const d = panelDescriptor(Config)
+  const json = JSON.stringify(d)
+  assert.ok(json.length > 1000, `描述符太小，可能没带上字段：${json.length}`)
+  const back = JSON.parse(json)
+  assert.equal(back.sections.length, d.sections.length, '往返后段数不变')
+  assert.equal(back.custom.length, d.custom.length)
+  // 关键：往返后每个段的字段数与默认值都得还在——有函数/undefined 就会丢。
+  for (const section of d.sections) {
+    const same = back.sections.find((s) => s.key === section.key)
+    assert.equal(same.fields.length, section.fields.length, `${section.key} 字段数往返不一致`)
+    for (const f of section.fields) {
+      const f2 = same.fields.find((x) => x.key === f.key)
+      assert.ok(f2, `${section.key}.${f.key} 往返后丢了`)
+      assert.equal(f2.control, f.control, `${section.key}.${f.key} 控件类型往返不一致`)
+      assert.deepEqual(f2.default, f.default, `${section.key}.${f.key} 默认值往返不一致`)
+    }
+  }
+})
+
+check('panelDescriptor：自带自定义白名单与上游顺序表', () => {
+  const d = panelDescriptor(Config)
+  assert.ok(Array.isArray(d.custom) && d.custom.length >= 5, '应有自定义区块白名单')
+  assert.ok(d.custom.includes('扫码绑定'), '扫码绑定必须手写')
+  assert.ok(d.custom.includes('实时日志'), '实时日志必须手写')
+  assert.deepEqual(d.upstreamOrder, UPSTREAM_SECTION_ORDER, '应带上游顺序表')
+  assert.equal(d.version, 1, '带版本号，便于前端兼容')
+})
+
+check('自定义白名单与 schema 段**不重叠**（同一个区块不能两处都画）', () => {
+  const d = panelDescriptor(Config)
+  const schemaKeys = new Set(d.sections.map((s) => s.key))
+  const overlap = d.custom.filter((name) => schemaKeys.has(name))
+  assert.deepEqual(overlap, [], `这些名字既是 schema 段又在自定义白名单里：${JSON.stringify(overlap)}`)
 })
 
 console.log(`\n配置面描述层：通过 ${passed} 项，失败 ${failed} 项`)

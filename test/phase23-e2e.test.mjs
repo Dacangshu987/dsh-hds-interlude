@@ -715,6 +715,38 @@ await check('分享码导入：GET 只预览不写配置；POST 才应用；连�
   await ctx.stop?.()
 })
 
+/* ───────── 面板描述符路由：schema → 前端可渲染结构 ───────── */
+
+await check('面板描述符路由：GET 返回可渲染结构，且**覆盖所有 schema 段**', async () => {
+  // 这是「面板不再与 schema 漂移」的落点：前端不自己读 schema，而是拿服务端
+  // 算好的描述符当哑渲染器。所以这条要钉「路由真的发出去了」且「段是全的」。
+  const { ctx, routes } = await boot({ events: [] })
+  const route = routes.get('/api/hds-interlude/panel-schema')
+  assert.ok(route, '面板描述符路由应已注册')
+
+  let payload = null
+  const res = { writeHead() {}, end(body) { payload = body ? JSON.parse(body) : null } }
+  await route({ method: 'GET', url: '/api/hds-interlude/panel-schema' }, res)
+
+  assert.ok(payload && payload.ok, `应成功：${JSON.stringify(payload)}`)
+  const value = payload.value
+  assert.ok(Array.isArray(value.sections) && value.sections.length >= 20,
+    `段数偏少：${value.sections?.length}`)
+  assert.ok(value.custom.includes('扫码绑定'), '带自定义白名单')
+  // 每个段都要有 label 与 fields，否则前端画不出来。
+  for (const section of value.sections) {
+    assert.ok(section.label, `${section.key} 缺 label`)
+    assert.ok(Array.isArray(section.fields), `${section.key} 缺 fields`)
+  }
+  // 非 GET 一律 405，不静默接受。
+  let code = null
+  await route({ method: 'POST', url: '/api/hds-interlude/panel-schema' }, {
+    writeHead(c) { code = c }, end() {},
+  })
+  assert.equal(code, 405, '非 GET 应 405')
+  await ctx.stop?.()
+})
+
 /* ───────── 共同作品：端到端（创建 → 写手产出 → 用户接受） ───────── */
 
 await check('共同作品：创建 → 写手产出待决提案 → 用户接受（作品本身在接受前不变）', async () => {
