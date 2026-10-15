@@ -389,10 +389,11 @@ check('聊天页有合并转发预算三项，且读回配置值（rc6）', () =
 })
 
 check('聊天页有跨群投递（rc11）：开关已开、每轮上限与白名单读回', () => {
+  // 该组已迁移到生成式渲染：标签来自 **schema 描述**。
   const cb = checkboxNear(chat, '允许私聊回合跨群投递')
   assert.ok(cb, '没找到跨群投递开关')
   eq(cb.props.checked, true, '开关应读回 true')
-  eq(controlNearLabel(chat, '每轮最多几次').props.value, 2, '每轮上限')
+  eq(controlNearLabel(chat, '最多执行几次').props.value, 2, '每轮上限')
   eq(controlNearLabel(chat, '目标白名单').props.value, 'group:777', '白名单')
 })
 
@@ -499,7 +500,8 @@ current = await setValue(controlNearLabel(goTab('扩展'), '生成检查间隔')
 current = await setValue(controlNearLabel(current, '拉黑名单'), '小鹿, 老王')
 current = await setValue(controlNearLabel(current, '模型名（用于自动推断）'), 'claude-sonnet')
 // 聊天页：改跨群每轮上限
-current = await setValue(controlNearLabel(goTab('聊天'), '每轮最多几次'), '3')
+// 跨群上限已迁移到生成式渲染：编辑时也用 **schema 描述**里的文案。
+current = await setValue(controlNearLabel(goTab('聊天'), '最多执行几次'), '3')
 // 扩展页：改休息时段（两行 → 解析成两个窗口）
 current = await setValue(controlNearLabel(goTab('扩展'), '休息时段'), '23:00-07:00\n13:00-14:00')
 // 扩展页：改提示词四层（对齐上游 rc50）
