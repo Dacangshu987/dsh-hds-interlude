@@ -430,7 +430,7 @@ function numberBoxByLabel(tree, labelText) {
 await check('写故事间隔能改，并落在 runtime.autoAdvanceIntervalMinutes', async () => {
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  type(numberBoxByLabel(tree, '写故事间隔（分钟）'), '25')
+  type(numberBoxByLabel(tree, '写故事间隔：无对话时每隔多少分钟续写一段角色生活（分钟）。这一项只影响 DSH 里的故事，不影响发消息。'), '25')
   tree = rerender()
   await save(tree)
   assert.equal(server.posted.runtime.autoAdvanceIntervalMinutes, 25, JSON.stringify(server.posted.runtime))
@@ -441,7 +441,7 @@ await check('发消息间隔填 0 不该被悄悄改成 120（0 = 每轮有话�
   // 用户想恢复「有话就发」的旧节奏却怎么填都没用。
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  type(numberBoxByLabel(tree, '发消息间隔（分钟）'), '0')
+  type(numberBoxByLabel(tree, '发消息间隔：两次「自动发消息」之间至少隔多少分钟（分钟）。写故事不受它限制；到点的提醒/承诺不受它限制。填 0 表示每轮有话就发。'), '0')
   tree = rerender()
   await save(tree)
   assert.equal(server.posted.im.messageIntervalMinutes, 0, JSON.stringify(server.posted.im))
@@ -450,7 +450,7 @@ await check('发消息间隔填 0 不该被悄悄改成 120（0 = 每轮有话�
 await check('发消息间隔能改，并落在 im.messageIntervalMinutes', async () => {
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  type(numberBoxByLabel(tree, '发消息间隔（分钟）'), '180')
+  type(numberBoxByLabel(tree, '发消息间隔：两次「自动发消息」之间至少隔多少分钟（分钟）。写故事不受它限制；到点的提醒/承诺不受它限制。填 0 表示每轮有话就发。'), '180')
   tree = rerender()
   await save(tree)
   assert.equal(server.posted.im.messageIntervalMinutes, 180, JSON.stringify(server.posted.im))
@@ -459,7 +459,7 @@ await check('发消息间隔能改，并落在 im.messageIntervalMinutes', async
 await check('「故事里角色的发言自动发出去」关掉后落在 im.autoMessage', async () => {
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  const label = all(tree).find(el => el.tag === 'span' && /故事里角色的发言自动发出去/.test(textOf(el)))
+  const label = all(tree).find(el => el.tag === 'span' && /故事续写里角色的发言是否自动发到聊天软件。关掉后只写故事、不打扰用户（到点提醒仍照常送达）。/.test(textOf(el)))
   assert.ok(label, '找不到这个开关')
   const row = all(tree).find(el => {
     const kids = el.props && el.props.children
@@ -476,9 +476,18 @@ await check('「故事里角色的发言自动发出去」关掉后落在 im.aut
 
 await check('老配置 deliverAutoAdvance=false 时，面板开关如实显示为关', async () => {
   // 兼容开关与新开关是「都开才开」。面板若不把它算进去，老用户会看到开着却收不到消息。
-  let tree = await mount({ im: { autoMessage: true, deliverAutoAdvance: false } })
+  /*
+   * 「老兼容开关关掉 → 显示为关」这条现在由**兼容层**保证
+   * （见 test/config-compat.test.mjs 的「语义归一」用例）：
+   * 面板改成生成式后直接读 im.autoMessage，而 `deliverAutoAdvance: false` 的有效值
+   * 是 normalizeConfigAliases 落下来的。
+   *
+   * 本夹具的 fetch 是**直接返回配置**、绕过了插件路由（路由里才会归一），
+   * 所以这里给它归一后的值——生产里那条路由会做同样的事。
+   */
+  let tree = await mount({ im: { autoMessage: false } })
   tree = switchTab(tree, '节奏')
-  const label = all(tree).find(el => el.tag === 'span' && /故事里角色的发言自动发出去/.test(textOf(el)))
+  const label = all(tree).find(el => el.tag === 'span' && /故事续写里角色的发言是否自动发到聊天软件。关掉后只写故事、不打扰用户（到点提醒仍照常送达）。/.test(textOf(el)))
   const row = all(tree).find(el => {
     const kids = el.props && el.props.children
     return Array.isArray(kids) && kids.includes(label)

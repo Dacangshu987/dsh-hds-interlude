@@ -163,5 +163,17 @@ check('改名对表是唯一来源（键名只在这里出现一次）', () => {
   assert.equal(RENAMED_KEYS.story, 'storyDefaults')
 })
 
+check('语义归一：deliverAutoAdvance=false（老开关）会把 autoMessage 的有效值拉成 false', () => {
+  // 生成式面板直接读 im.autoMessage，所以有效值必须在兼容层就落下来，
+  // 否则老用户在面板上看到「开着」却收不到消息。
+  const off = normalizeConfigAliases({ im: { autoMessage: true, deliverAutoAdvance: false } })
+  assert.equal(off.im.autoMessage, false, '都开才开：老开关关掉时有效值应为 false')
+  assert.equal(off.im.deliverAutoAdvance, false, '老键保留（不改写用户的写法）')
+  const on = normalizeConfigAliases({ im: { autoMessage: true, deliverAutoAdvance: true } })
+  assert.equal(on.im.autoMessage, true, '两者都开 → true')
+  const onlyNew = normalizeConfigAliases({ im: { autoMessage: true } })
+  assert.equal(onlyNew.im.autoMessage, true, '只写新键 → 不受影响')
+})
+
 console.log(`\n配置改名兼容层：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)

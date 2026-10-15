@@ -365,9 +365,9 @@ check('聊天页有表情清单两个上限，且读回配置里的值（Sticker
 check('节奏页有对话后续补写与手动推进下限，且读回配置里的值（rc50）', () => {
   const rhythm = goTab('节奏')
   // 三个字段此前**只在 schema 与逻辑里生效，没上面板**——用户在界面上配不了。
-  eq(controlNearLabel(rhythm, '对话后续补写').props.value, '5, 15', '分钟列表按逗号分隔读回')
-  eq(Number(controlNearLabel(rhythm, '补写时间随机浮动').props.value), 3, 'jitter')
-  eq(Number(controlNearLabel(rhythm, '手动推进下限').props.value), 45, 'minimumAdvanceMinutes')
+  eq(controlNearLabel(rhythm, '额外补写生活的时间点').props.value, '5, 15', '分钟列表按逗号分隔读回')
+  eq(Number(controlNearLabel(rhythm, '短期补写的随机浮动范围').props.value), 3, 'jitter')
+  eq(Number(controlNearLabel(rhythm, '最小有效补写间隔').props.value), 45, 'minimumAdvanceMinutes')
 })
 
 check('聊天页有原生表情结构化通道，且读回配置里的值（ChatActions 段）', () => {
@@ -512,7 +512,7 @@ current = await setValue(controlNearLabel(current, '文风指令（只作用于�
 // 创作页：把 perspectives 清空（验「送空数组」，否则深合并会把旧条目留下）
 current = await setValue(controlNearLabel(goTab('创作'), '价值观·多条独立条目'), '')
 // 节奏页：把对话后续补写列表清空（同样要送 []，= 关闭该回路）
-current = await setValue(controlNearLabel(goTab('节奏'), '对话后续补写'), '')
+current = await setValue(controlNearLabel(goTab('节奏'), '额外补写生活的时间点'), '')
 
 const saveBtn = buttonByText(current ?? view.get(), '保存')
 check('找到保存按钮', () => { assert.ok(saveBtn, '没有保存按钮') })
@@ -740,6 +740,7 @@ check('已迁移的组不得再有手写控件（同一设置出现两个输入�
     'im.chunking': ['imSplitReply', 'imMessageSeparator', 'imConvertNewline', 'imMaxMessages', 'imMaxChars', 'imChunkInterval', 'imTyping'],
     '顶层时间三项': ['timeZone', 'gapNoticeMinutes', 'alwaysReportTime'],
     '顶层提示词与规则': ['rules', 'mainPrompt', 'formatPrompt', 'fixedPrompt', 'stylePrompt'],
+    '消息节奏段': ["autoAdvanceIntervalMinutes","messageIntervalMinutes","conversationFollowUpMinutes","conversationFollowUpJitterMinutes","minimumAdvanceMinutes","autoAdvanceJitterMinutes","roleplayOnly","autoMessage"],
   }
   const leftover = []
   for (const [group, prefixes] of Object.entries(MIGRATED_SCALAR_PREFIXES)) {
