@@ -274,11 +274,12 @@ await check('保存时，打进去的字落在正确字段上', async () => {
 
   assert.ok(server.posted, '未发出保存请求')
   assert.deepEqual(
-    server.posted.story && server.posted.story.character && server.posted.story.character.name,
+    // 键名已按上游改为 storyDefaults（旧的 story 由 config-compat 兼容读取）。
+    server.posted.storyDefaults && server.posted.storyDefaults.character && server.posted.storyDefaults.character.name,
     '水濑',
-    `保存的 payload 里主角名称不对：${JSON.stringify(server.posted.story)}`,
+    `保存的 payload 里主角名称不对：${JSON.stringify(server.posted.storyDefaults)}`,
   )
-  const boundaries = server.posted.story && server.posted.story.plot && server.posted.story.plot.boundaries
+  const boundaries = server.posted.storyDefaults && server.posted.storyDefaults.plot && server.posted.storyDefaults.plot.boundaries
   assert.ok(!boundaries, `「禁则与边界」不该收到别人的文字，实际：${JSON.stringify(boundaries)}`)
 })
 

@@ -82,6 +82,37 @@ check('readAliased：新名优先、回退旧名、都没有返回 undefined', (
   assert.equal(readAliased({ other: 1 }, 'other'), 1)
 })
 
+check('带 defaults：**旧名是用户写的、新名只是 schema 默认值** → 用旧名（不能压掉用户配置）', () => {
+  // 这是实测踩到的坑：改名后配置里只有旧名时，宿主会给新名填上默认值——
+  // 简单规则「新名赢」会拿默认值把用户真正的配置压掉（主角名变成 Unnamed character）。
+  const defaults = { story: { character: { name: 'Unnamed character' } }, storyDefaults: { character: { name: 'Unnamed character' } } }
+  const out = normalizeConfigAliases(
+    { story: { character: { name: '大傻鱼' } }, storyDefaults: { character: { name: 'Unnamed character' } } },
+    { defaults },
+  )
+  assert.equal(out.story.character.name, '大傻鱼', '用户写的旧名必须赢')
+  assert.equal(out.storyDefaults.character.name, '大傻鱼', '并把旧名对齐')
+})
+
+check('带 defaults：新名是用户写的、旧名是默认值 → 用新名', () => {
+  const defaults = { story: { v: 'd' }, storyDefaults: { v: 'd' } }
+  const out = normalizeConfigAliases({ story: { v: 'd' }, storyDefaults: { v: 'n' } }, { defaults })
+  assert.equal(out.story.v, 'n')
+  assert.equal(out.storyDefaults.v, 'n')
+})
+
+check('带 defaults：两个都不是默认值 → 仍是新名赢（改名后的规范名优先）', () => {
+  const defaults = { story: { v: 'd' }, storyDefaults: { v: 'd' } }
+  const out = normalizeConfigAliases({ story: { v: 'old' }, storyDefaults: { v: 'new' } }, { defaults })
+  assert.equal(out.storyDefaults.v, 'new')
+  assert.equal(out.story.v, 'new')
+})
+
+check('不带 defaults：退回「新名优先」（调用方明确知道没有默认值填充时可用）', () => {
+  const out = normalizeConfigAliases({ story: { v: 'old' }, storyDefaults: { v: 'new' } })
+  assert.equal(out.story.v, 'new')
+})
+
 check('改名对表是唯一来源（键名只在这里出现一次）', () => {
   assert.deepEqual(Object.keys(RENAMED_KEYS), ['story'])
   assert.equal(RENAMED_KEYS.story, 'storyDefaults')

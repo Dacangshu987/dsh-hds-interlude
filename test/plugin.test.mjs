@@ -73,7 +73,8 @@ await check('Config 用真实 schemastery 归一化，嵌套默认值被填充',
   assert.equal(c.timeZone, 'Asia/Shanghai')
   assert.equal(c.enabled, true)
   assert.equal(c.gapNoticeMinutes, 30)
-  assert.equal(c.story.character.name, 'Unnamed character')
+  // 键名已按上游改为 storyDefaults（旧名 story 由 config-compat 兼容读取）。
+  assert.equal(c.storyDefaults.character.name, 'Unnamed character')
   assert.equal(c.runtime.autoAdvanceIntervalMinutes, 40)
   assert.equal(c.alterSystem.baseThreshold, 10)
   assert.equal(c.agency.maxWindowMinutes, 240)

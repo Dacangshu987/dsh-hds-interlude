@@ -778,17 +778,15 @@ await check('配置改名兼容：只写 storyDefaults 时，设置路由把 sto
   const viaOld = await readSettings({ story })
   assert.equal(viaOld.story?.character?.name, '测试角色', '只写旧名时照常可用')
   assert.equal(viaOld.storyDefaults?.character?.name, '测试角色', '旧名也应把新名填上')
-  // 【本次发现的缺陷】只写新名时，story 的值是**透传原文**——因为 storyDefaults 还不在
-  // schema 里，所以没走 schemastery 的解析（不填默认值、不补全形状）。
-  // 而只写旧名时，story 是**解析后**的（含默认值）。
+  // 【上一轮钉在这儿的缺陷已修】当时：新名不在 schema 里 → 透传、不解析，两种写法
+  // 拿到**不同形状**。改名之后 schema 认识新名了，所以**两种写法都应是解析后的**。
   //
-  // 也就是说：把新名「当作兼容别名透传」是不够的——下游拿到的是两种不同形状。
-  // 所以下一步（真正改名）不是可选项：**必须让 schema 认识 storyDefaults**，
-  // 两个名字才会都经过解析、形状一致。这条断言就是在钉住这个事实。
-  const oldResolved = viaOld.story && viaOld.story.plot && Object.keys(viaOld.story.plot).length > 1
-  const newRaw = viaNew.story && viaNew.story.plot && Object.keys(viaNew.story.plot).length === 1
-  assert.ok(oldResolved, '只写旧名时 story 应是**解析后**的（plot 被补全）')
-  assert.ok(newRaw, '只写新名时目前是**透传**的（这正是下一步要修的地方）')
+  // 这条断言上一轮是「新名透传」，本轮按计划**翻转为「新名也解析」**——
+  // 把缺陷留在断言里，改完之后它会自己提醒你来翻。
+  const shapes = (v) => Object.keys((v && v.plot) || {}).sort().join(',')
+  assert.equal(shapes(viaNew.story), shapes(viaOld.story),
+    `两种写法应得到**同一形状**：新名 ${shapes(viaNew.story)} / 旧名 ${shapes(viaOld.story)}`)
+  assert.ok(Object.keys(viaNew.story.plot).length > 1, '只写新名时也应是**解析后**的（plot 被补全）')
 })
 
 /* ───────── 共同作品：端到端（创建 → 写手产出 → 用户接受） ───────── */

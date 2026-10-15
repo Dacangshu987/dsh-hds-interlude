@@ -519,9 +519,10 @@ if (saveCall) {
     eq(value.worldSeeder?.cadenceMinutes, 50, 'worldSeeder.cadenceMinutes')
     eq(value.specialization?.modelProbe, 'claude-sonnet', 'specialization.modelProbe')
     // 清空的多条目字段必须显式送 []（漏送 → 深合并把旧条目留下 → 用户「删不掉」）。
-    eq(value.story?.perspectives, [], 'story.perspectives 清空后应送 []')
+    // 键名已按上游改为 storyDefaults。
+    eq(value.storyDefaults?.perspectives, [], 'storyDefaults.perspectives 清空后应送 []')
     // 没动过的那个照旧带上。
-    eq(value.story?.supplementaryFacts, ['她怕黑', '左耳有点背'], 'story.supplementaryFacts')
+    eq(value.storyDefaults?.supplementaryFacts, ['她怕黑', '左耳有点背'], 'storyDefaults.supplementaryFacts')
     // 节奏：清空的补写列表也送 []（= 关闭该回路），没动的两项保持原值。
     eq(value.runtime?.conversationFollowUpMinutes, [], 'runtime.conversationFollowUpMinutes 清空后应送 []')
     eq(value.runtime?.conversationFollowUpJitterMinutes, 3, '未被漏写')
