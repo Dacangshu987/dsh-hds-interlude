@@ -143,7 +143,8 @@ check('搬移：新路径只是默认值、旧路径不是 → 用旧路径（�
 })
 
 check('搬移：表中没有的路径不动（不留第二个清单）', () => {
-  assert.deepEqual(MOVED_PATHS, {}, '当前搬移表应为空——第一条随 stickers 段迁移一起加')
+  // stickers 段迁移时登记了前三条；这里只断言「表外的路径一律不动」。
+  assert.ok(Object.keys(MOVED_PATHS).length >= 3, 'stickers 的三条搬移应已登记')
   const out = normalizeConfigAliases({ im: { other: 1 } }, { moved: MOVED })
   assert.equal(out.im.other, 1)
   assert.equal('stickers' in out, false, '不该凭空造出 stickers')
