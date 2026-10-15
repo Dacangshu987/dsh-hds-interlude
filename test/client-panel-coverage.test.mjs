@@ -631,6 +631,22 @@ if (saveCall) {
   const PENDING = new Set([])
   const isPending = (path) => PENDING.has(path)
 
+  /*
+   * 反向校验：**登记了「不暴露」、实际却暴露了** 也要红。
+   *
+   * 这张表原先只有单向校验（没暴露却没登记 → 红），于是「假登记」永远没人发现：
+   * 典型是 `alterSystem.` 这种**前缀登记**——它把整段都标成「高级调参不给控件」，
+   * 而 `alterSystem.enabled` 其实由手写开关读写、确实在载荷里。
+   *
+   * 假登记的危害不是「多写一行」：它会让后来人以为那个字段没暴露，
+   * 据此做判断（我就曾因为同类假登记把 `im.group.enabled` 误判为「惰性别名」，
+   * 差点照着错的结论把它删掉）。
+   */
+  const falselyHidden = schemaPaths.filter(p => isAllowed(p) && payloadPaths.has(p))
+  check('「未暴露」登记不得**假登记**（登记了不暴露、实际却在载荷里）', () => {
+    eq(falselyHidden, [], `这些字段登记为「不暴露」但实际已暴露：${JSON.stringify(falselyHidden)}`)
+  })
+
   const uncovered = schemaPaths.filter(p => !payloadPaths.has(p))
   const unexpected = uncovered.filter(p => !isAllowed(p) && !isPending(p))
 

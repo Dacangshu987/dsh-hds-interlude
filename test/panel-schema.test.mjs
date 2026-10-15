@@ -121,10 +121,14 @@ check('PANEL_HIDDEN：命中即标记 hidden 并带上理由；未登记的不�
   assert.equal(byKey.privateWeight.hidden, '上游固定 1.0（权重契约），配置不生效')
   assert.equal(byKey.groupWeight.hidden !== undefined, true)
   assert.equal(byKey.enabled.hidden, undefined, '有效字段不该被隐藏')
-  // 前缀登记：整个 agency 段都隐藏。
+  // agency：**逐字段**登记（不再用前缀把整段一网打尽）——`enabled` 是暴露的
+  // （手写开关读写它），把它一起标成「不暴露」就是**假登记**，会让后来人误判。
   const agency = sections2.find((s) => s.key === 'agency')
   assert.ok(agency.fields.length > 0)
-  assert.ok(agency.fields.every((f) => f.hidden), 'agency. 是前缀登记，应全部隐藏')
+  assert.equal(agency.fields.find((f) => f.key === 'enabled').hidden, undefined,
+    'agency.enabled 是暴露的，不该被标为隐藏（假登记）')
+  assert.ok(agency.fields.filter((f) => f.key !== 'enabled').every((f) => f.hidden),
+    '其余 agency 字段应逐个登记为隐藏')
   // 未登记的段不受影响。
   assert.equal(hiddenReasonFor('weather.latitude'), undefined)
 })
