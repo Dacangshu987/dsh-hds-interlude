@@ -283,7 +283,7 @@ const tree = await openFirstBot(baseTree)
 console.log('一、面板读出的初始值')
 {
   check('IM 开关默认关（未配置时不该假装已启用）', () => {
-    const cb = checkboxNear(tree, '启用 QQ 机器人通道')
+    const cb = checkboxNear(tree, '启用 IM 主动投递。配好 appId + secretRef 即生效。')
     assert.ok(cb, '没找到「启用 QQ 机器人通道」开关')
     eq(cb.props.checked, false, '默认应当是关')
   })
@@ -328,7 +328,7 @@ console.log('\n二、改值 + 保存')
   let current = tree
   const rerenderAndGet = async () => { await sleep(15); current = view.get(); return current }
 
-  checkboxNear(current, '启用 QQ 机器人通道').props.onChange({ target: { checked: true } })
+  checkboxNear(current, '启用 IM 主动投递。配好 appId + secretRef 即生效。').props.onChange({ target: { checked: true } })
   current = await rerenderAndGet()
 
   inputByPlaceholder(current, '例如 1905583221').props.onChange({ target: { value: '1905583221' } })
