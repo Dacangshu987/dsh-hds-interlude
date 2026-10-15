@@ -340,17 +340,19 @@ check('创作页有上游两个多条目字段，且按行读回（rc50 StoryDef
 
 const chat = openAdvanced(goTab('聊天'))
 check('聊天页有打字节奏四项，且读回配置里的值（rc21）', () => {
-  eq(controlNearLabel(chat, '打字基础等待').props.value, 2, '基础等待')
-  eq(controlNearLabel(chat, '打字速度').props.value, 12, '字/秒')
-  eq(controlNearLabel(chat, '单条最长等待').props.value, 8, '最长等待')
-  eq(controlNearLabel(chat, '等待的随机浮动').props.value, 0.1, '抖动')
+  // 该组已迁移到生成式渲染：标签来自 **schema 描述**。
+  eq(controlNearLabel(chat, '基础打字等待').props.value, 2, '基础等待')
+  eq(controlNearLabel(chat, '模拟打字速度').props.value, 12, '字/秒')
+  eq(controlNearLabel(chat, '最长打字等待').props.value, 8, '最长等待')
+  eq(controlNearLabel(chat, '随机浮动比例').props.value, 0.1, '抖动')
 })
 
 check('聊天页有气泡边界协议三项，且读回配置里的值（rc36）', () => {
   // 分条开关：夹具里是 false（关闭），所以复选框应为未勾选。
-  eq(checkboxNear(chat, '允许分条发送').props.checked, false, 'splitReplyMessages=false')
+  // 该组已迁移到生成式渲染：标签来自 **schema 描述**。
+  eq(checkboxNear(chat, '是否把一段话拆成多条短消息发送').props.checked, false, 'splitReplyMessages=false')
   eq(controlNearLabel(chat, '气泡分隔符').props.value, '||', '自定义分隔符')
-  eq(checkboxNear(chat, '换行也当分条边界').props.checked, true, 'convertNewlineToSeparator=true')
+  eq(checkboxNear(chat, '换行运行视作气泡边界').props.checked, true, 'convertNewlineToSeparator=true')
 })
 
 check('聊天页有表情清单两个上限，且读回配置里的值（Stickers 段）', () => {
@@ -492,7 +494,7 @@ check('扩展页有维护段（记忆窗口 / 休息时段 / 日志）并读回�
 /* ─────────────────── D. 往返：改值 → 保存 → 落对路径 ─────────────────── */
 
 let current = view.get()
-current = await setValue(controlNearLabel(goTab('聊天'), '打字速度'), '20')
+current = await setValue(controlNearLabel(goTab('聊天'), '模拟打字速度'), '20')
 // 扩展页：改播种器检查间隔与模型名
 current = await setValue(controlNearLabel(goTab('扩展'), '生成检查间隔'), '50')
 // 扩展页：改一个**数组字段**（拉黑名单）。必须真的编辑它——只断言播种结果是不够的：
