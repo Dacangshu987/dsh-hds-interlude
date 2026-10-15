@@ -741,6 +741,7 @@ check('已迁移的组不得再有手写控件（同一设置出现两个输入�
     '顶层时间三项': ['timeZone', 'gapNoticeMinutes', 'alwaysReportTime'],
     '顶层提示词与规则': ['rules', 'mainPrompt', 'formatPrompt', 'fixedPrompt', 'stylePrompt'],
     '消息节奏段': ["autoAdvanceIntervalMinutes","messageIntervalMinutes","conversationFollowUpMinutes","conversationFollowUpJitterMinutes","minimumAdvanceMinutes","autoAdvanceJitterMinutes","roleplayOnly","autoMessage"],
+    '功能开关段': ["proactiveEnabled","autoAdvanceEnabled","agencyEnabled","alterEnabled","preplanEnabled","urgeEnabled"],
   }
   const leftover = []
   for (const [group, prefixes] of Object.entries(MIGRATED_SCALAR_PREFIXES)) {

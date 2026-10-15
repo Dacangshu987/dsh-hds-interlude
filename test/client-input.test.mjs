@@ -596,7 +596,7 @@ await check('开/关两态的轨道色与滑块位置不同（checked 由渲染�
   // 而是渲染期按 checked 选择两套内联样式——这条用例直接钉这个契约。
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  const onBox = switchByLabel(tree, '主动联系') // 默认 true
+  const onBox = switchByLabel(tree, '允许宿主在到点时唤起一次主动开口。') // 默认 true
   assert.equal(onBox.props.checked, true, '前置条件：这个开关默认开')
   const offBox = switchByLabel(tree, '每回合都注入当前时间，即使没有其它事实。')
   assert.equal(offBox.props.checked, false, '前置条件：这个开关默认关')
@@ -612,12 +612,12 @@ await check('开/关两态的轨道色与滑块位置不同（checked 由渲染�
 await check('切换开关后内联样式随之改变（不依赖重新挂载）', async () => {
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  const before = switchByLabel(tree, '主动联系')
+  const before = switchByLabel(tree, '允许宿主在到点时唤起一次主动开口。')
   assert.equal(before.props.checked, true, '前置条件：默认开')
   const beforePos = before.props.style.backgroundPosition
   before.props.onChange({ target: { checked: false } })
   tree = rerender()
-  const after = switchByLabel(tree, '主动联系')
+  const after = switchByLabel(tree, '允许宿主在到点时唤起一次主动开口。')
   assert.equal(after.props.checked, false)
   assert.notEqual(after.props.style.backgroundPosition, beforePos, '关闭后滑块位置应改变')
   assert.match(String(after.props.style.backgroundPosition), /left/, '关闭后滑块靠左')
