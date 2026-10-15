@@ -462,7 +462,7 @@ check('扩展页有模型特化（rc14）：档位与模型名读回', () => {
   const mode = collectInputs(advanced).find(i => i.tag === 'select' && (i.children ?? []).some(o => o.props?.value === 'lite'))
   assert.ok(mode, '没找到档位下拉')
   eq(mode.props.value, 'lite', '档位')
-  eq(controlNearLabel(advanced, '模型名（用于自动推断）').props.value, 'gemini-3-flash', '模型名')
+  eq(controlNearLabel(advanced, '模型名（用于自动推断特化档位）：填上游认识的模型名即按其规则生成特化块；留空 = 不特化。').props.value, 'gemini-3-flash', '模型名（用于自动推断特化档位）：填上游认识的模型名即按其规则生成特化块；留空 = 不特化。')
 })
 
 check('扩展页有提示词四层（对齐上游 rc50）：四个字段读回配置值', () => {
@@ -504,7 +504,7 @@ current = await setValue(controlNearLabel(goTab('扩展'), '生成检查间隔')
 // 扩展页：改一个**数组字段**（拉黑名单）。必须真的编辑它——只断言播种结果是不够的：
 // 不编辑就不会触发 onChange 里的数组转换（我第一版断言就是这样，证伪时没红）。
 current = await setValue(controlNearLabel(current, '拉黑名单'), '小鹿, 老王')
-current = await setValue(controlNearLabel(current, '模型名（用于自动推断）'), 'claude-sonnet')
+current = await setValue(controlNearLabel(current, '模型名（用于自动推断特化档位）：填上游认识的模型名即按其规则生成特化块；留空 = 不特化。'), 'claude-sonnet')
 // 聊天页：改跨群每轮上限
 // 跨群上限已迁移到生成式渲染：编辑时也用 **schema 描述**里的文案。
 current = await setValue(controlNearLabel(goTab('聊天'), '最多执行几次'), '3')
