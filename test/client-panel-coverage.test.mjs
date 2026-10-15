@@ -719,6 +719,36 @@ check('生成式段**按页挂载**：时间导演在节奏页，长线叙事在
   assert.ok(!rhythm.includes('长线叙事【扩展 16】'), '长线叙事不该出现在节奏页')
 })
 
+/* ───────── 已迁移的组不得再留手写控件（否则会出现「双份控件」） ───────── */
+
+check('已迁移的组不得再有手写控件（同一设置出现两个输入框）', () => {
+  /*
+   * 这条补的是一个**真实漏过的**缺口。
+   *
+   * 迁 `im.chunking` 时我摘了 6 块，但 `blockOf` 锚定的是**单元格**而不是**行容器**，
+   * 于是同一行里别的单元格活了下来——`convertNewlineToSeparator` / 打字速度 / 最长等待
+   * **各有手写与生成式两份控件**，两份走两个数据源（scalar vs autoDraft）。
+   *
+   * 当时的两条不变量都查不出来：一条只看**保存载荷里的路径**，一条只看
+   * **生成式字段有没有被渲染**——**没有一条管「手写那份删没删」**。
+   *
+   * 所以这里按「已迁移组 → 它旧手写的 scalar 名前缀」登记，要求全部清零。
+   * 新迁一个组时，把它对应的 scalar 前缀加进来即可。
+   */
+  const clientSrc = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const MIGRATED_SCALAR_PREFIXES = {
+    'im.chunking': ['imSplitReply', 'imMessageSeparator', 'imConvertNewline', 'imMaxMessages', 'imMaxChars', 'imChunkInterval', 'imTyping'],
+  }
+  const leftover = []
+  for (const [group, prefixes] of Object.entries(MIGRATED_SCALAR_PREFIXES)) {
+    for (const pre of prefixes) {
+      const n = (clientSrc.match(new RegExp("updateScalar\\('" + pre, 'g')) || []).length
+      if (n > 0) leftover.push(`${group}: ${pre}* × ${n}`)
+    }
+  }
+  eq(leftover, [], `这些已迁移的组仍有手写控件（会出现双份控件）：${JSON.stringify(leftover)}`)
+})
+
 /* ───────── 夹具卫生：断言生成式段的面板夹具**必须**提供描述符 ───────── */
 
 check('断言生成式段的面板夹具都必须提供描述符（否则那些段静默消失）', () => {
