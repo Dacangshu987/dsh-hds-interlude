@@ -10,6 +10,8 @@
  * 运行：node test/client-im-test-button.test.mjs
  */
 import assert from 'node:assert/strict'
+import { Config } from '../lib/schema.js'
+import { panelDescriptor } from '../lib/panel-schema.js'
 
 let passed = 0
 let failed = 0
@@ -123,6 +125,8 @@ globalThis.fetch = async (url, options) => {
     server.posted = JSON.parse(options.body)
     return jsonResponse({ ok: true })
   }
+  // 面板描述符：生成式渲染的段需要它才会出现（与其它面板夹具同做法）。
+  if (target.includes('/panel-schema')) return jsonResponse({ ok: true, value: panelDescriptor(Config) })
   if (target.includes('/presets')) return jsonResponse({ ok: true, presets: [] })
   if (target.includes('/status')) return jsonResponse({ ok: true, value: server.status })
   if (target.includes('/im-test')) {
@@ -326,20 +330,23 @@ function toggleByText(root, text) {
 await check('群聊意愿开关渲染在「消息行为」区', async () => {
   const t = chatTree(await mount(statusWithBinding()))
   const texts = all(t).map(textOf).join('\n')
-  assert.ok(texts.includes('群聊发言意愿'), '应有意愿开关')
-  assert.ok(texts.includes('群聊仅响应 @机器人'), '应有 @门控 开关（既有项）')
+  // 该组已迁移到生成式渲染：标签来自 **schema 描述**。
+  assert.ok(texts.includes('启用群聊发言意愿判定'), '应有意愿开关')
+  assert.ok(texts.includes('群聊只响应 @机器人'), '应有 @门控 开关（既有项）')
 })
 
-await check('关闭意愿时不铺开参数（面板保持克制）', async () => {
+await check('意愿参数**常显**（条件显示已按「对齐上游」去掉）', async () => {
+  // 手写版在关闭意愿时不铺开阈值/冷却；生成式**全部平铺**——这与上游 Console 的形态一致。
+  // 所以这条断言的期望值整个反过来了（原先断言「不该出现」，现在断言「就在那儿」）。
   const t = chatTree(await mount(statusWithBinding()))
   const boxes = all(t).filter((el) => el.tag === 'input' && el.props.type === 'number')
-  assert.equal(boxes.some((el) => String(el.props.value) === '0.24'), false, '关闭时不该出现阈值输入框')
+  assert.equal(boxes.length > 0, true, '本就该有数字输入框')
 })
 
 await check('开启意愿后显示阈值与冷却输入框（默认 0.24 / 0）', async () => {
   let t = await mount(statusWithBinding())
   t = chatTree(t)
-  toggleByText(t, '群聊发言意愿').props.onChange({ target: { checked: true } })
+  toggleByText(t, '启用群聊发言意愿判定').props.onChange({ target: { checked: true } })
   harness.beginRender()
   t = renderCard()
   const boxes = all(t).filter((el) => el.tag === 'input' && el.props.type === 'number')
@@ -350,7 +357,7 @@ await check('开启意愿后显示阈值与冷却输入框（默认 0.24 / 0）'
 await check('保存时写出 im.group.willingness 的三个字段', async () => {
   let t = await mount(statusWithBinding())
   t = chatTree(t)
-  toggleByText(t, '群聊发言意愿').props.onChange({ target: { checked: true } })
+  toggleByText(t, '启用群聊发言意愿判定').props.onChange({ target: { checked: true } })
   harness.beginRender()
   t = renderCard()
   // 「保存」按钮（页面底部那个）。
@@ -391,11 +398,14 @@ await check('面板不覆盖 settings.yaml 里的细调参数（深合并语义�
 await check('@门控关闭时给出醒目提示（否则每条群消息都会触发）', async () => {
   let t = await mount(statusWithBinding())
   t = chatTree(t)
-  toggleByText(t, '群聊仅响应 @机器人').props.onChange({ target: { checked: false } })
+  // 标签来自 **schema 描述**（生成式渲染）：注意是「只响应」不是「仅响应」。
+  toggleByText(t, '群聊只响应 @机器人').props.onChange({ target: { checked: false } })
   harness.beginRender()
   t = renderCard()
   const texts = all(t).map(textOf).join('\n')
-  assert.ok(texts.includes('建议同时开启'), `关掉 @门控 应提示配合意愿：${texts.slice(0, 200)}`)
+  // 旧的独立提示行随手写块一起撤了；但**那条建议仍在**——它现在写在
+  // willingness.enabled 的 schema 描述里（「关掉 mentionOnly 时建议开启」），常显。
+  assert.ok(texts.includes('建议开启'), `面板里应能看到「配合意愿」的建议：${texts.slice(0, 200)}`)
 })
 
 console.log(`\nclient-im-test-button.test.mjs：${passed} 项通过，${failed} 项失败`)

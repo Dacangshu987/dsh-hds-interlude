@@ -10,6 +10,8 @@
  * 做法与其它 client 测试一致：真实 `lib/client.js` + 小型响应式 hook 跑真实组件。
  */
 import { strict as assert } from 'node:assert'
+import { Config } from '../lib/schema.js'
+import { panelDescriptor } from '../lib/panel-schema.js'
 
 let captured = null
 globalThis.window = { __ModuleLoader__: { load(spec) { captured = spec } } }
@@ -76,7 +78,9 @@ function makeFetch(state, { status, logs }) {
   const fetchImpl = async (url, options = {}) => {
     const record = { url, options }
     calls.push(record)
-    if (url.includes('/presets')) return json({ ok: true, presets: [] })
+    // 面板描述符：生成式渲染的段需要它才会出现（与其它面板夹具同做法）。
+  if (url.includes('/panel-schema')) return json({ ok: true, value: panelDescriptor(Config) })
+  if (url.includes('/presets')) return json({ ok: true, presets: [] })
     if (url.includes('/logs')) {
       const since = Number(new URL(url, 'http://x').searchParams.get('since') ?? 0)
       record.since = since
@@ -262,26 +266,24 @@ await check('日志拉取带 since 参数（增量），刷新按钮再次拉取
 
 const chat = goTab('聊天')
 await check('意愿细调默认收起；展开后读回配置里的 7 个参数与关键词', () => {
-  const open = buttonByText(chat, '细调参数 ▸')
-  assert.ok(open, '没找到「细调参数 ▸」折叠按钮（默认应收起）')
-  assert.ok(!collectText(chat).includes('概率放大系数'), '收起时不该渲染细调字段')
-  open.props.onClick()
-  view.render()
-  const expanded = view.get()
-  eq(controlNearLabel(expanded, '概率放大系数').props.value, 2.5, '概率放大系数')
-  eq(controlNearLabel(expanded, '意愿半衰期').props.value, 300, '半衰期')
-  eq(controlNearLabel(expanded, '每次回复消耗').props.value, 0.4, '回复消耗')
-  eq(controlNearLabel(expanded, '每条消息累积').props.value, 0.2, '基础累积')
-  eq(controlNearLabel(expanded, '被引用时额外累积').props.value, 0.3, '引用累积')
-  eq(controlNearLabel(expanded, '命中关键词时额外累积').props.value, 0.35, '关键词累积')
-  eq(controlNearLabel(expanded, '关键词（每行一个').props.value, '猫\n雨', '关键词')
+  // 折叠区已按「对齐上游」去掉：生成式**全部平铺**，所以这条从「先找按钮再展开」
+  // 改为「直接读」。标签也随之来自 **schema 描述**；数组字段的显示形态是**逗号分隔**
+  // （原手写版按行）。
+  eq(controlNearLabel(chat, '概率放大系数').props.value, 2.5, '概率放大系数')
+  eq(controlNearLabel(chat, '意愿半衰期').props.value, 300, '半衰期')
+  eq(controlNearLabel(chat, '每次回复消耗').props.value, 0.4, '回复消耗')
+  eq(controlNearLabel(chat, '每条群消息累积').props.value, 0.2, '基础累积')
+  eq(controlNearLabel(chat, '有人引用机器人时额外累积').props.value, 0.3, '引用累积')
+  eq(controlNearLabel(chat, '命中关键词时额外累积').props.value, 0.35, '关键词累积')
+  eq(controlNearLabel(chat, '关键词列表').props.value, '猫, 雨', '关键词')
 })
 
 await check('细调参数改值后保存：落在 im.group.willingness.* 上', async () => {
   const expanded = view.get()
   controlNearLabel(expanded, '概率放大系数').props.onChange({ target: { value: '3.5' } })
   await sleep(20); view.render()
-  controlNearLabel(view.get(), '关键词（每行一个').props.onChange({ target: { value: '猫\n咖啡' } })
+  // 数组字段按**逗号**分隔（生成式统一形态）——原手写版按行。
+  controlNearLabel(view.get(), '关键词列表').props.onChange({ target: { value: '猫, 咖啡' } })
   await sleep(20); view.render()
 
   const saveBtn = buttonByText(view.get(), '保存')
@@ -294,7 +296,7 @@ await check('细调参数改值后保存：落在 im.group.willingness.* 上', a
   const will = (saveCall.payload?.value ?? saveCall.payload)?.im?.group?.willingness
   assert.ok(will, 'payload 里应有 im.group.willingness')
   eq(will.probabilityAmplifier, 3.5, 'probabilityAmplifier 应写入')
-  eq(will.keywords, ['猫', '咖啡'], 'keywords 应写入（按行切分）')
+  eq(will.keywords, ['猫', '咖啡'], 'keywords 应写入（按逗号切分）')
   // 未改动的细调项必须原样保留（面板漏写会把用户手写的值抹掉）
   eq(will.decayHalfLifeSeconds, 300, '半衰期不该被改掉')
   eq(will.replyCost, 0.4, '回复消耗不该被改掉')
