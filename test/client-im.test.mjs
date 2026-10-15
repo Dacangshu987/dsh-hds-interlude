@@ -14,6 +14,8 @@
  * 一次性调用拿不到内容），再驱动它的 onClick/onChange。
  */
 import { strict as assert } from 'node:assert'
+import { Config } from '../lib/schema.js'
+import { panelDescriptor } from '../lib/panel-schema.js'
 
 /* ---------------------------------------------------------------- 捕获模块 */
 
@@ -122,6 +124,8 @@ function makeFetch(state) {
     calls.push(record)
 
     // 预设列表（客户端会拉一次，返回空数组即可）。
+    // 面板描述符：生成式渲染的段需要它才会出现（与其它面板夹具同做法）。
+    if (url.includes('/panel-schema')) return json({ ok: true, value: panelDescriptor(Config) })
     if (url.includes('/presets')) return json({ ok: true, presets: [] })
     // 只读运行状态视图（不参与本测试，给一个空壳）。
     if (url.includes('/status')) return json({ ok: true })

@@ -377,7 +377,7 @@ check('聊天页有原生表情结构化通道，且读回配置里的值（Chat
   const checked = boxes.filter(i => i.props.checked).length
   assert.ok(checked >= 2, `夹具里至少勾了两个语义，实际勾了 ${checked} 个`)
   // 阈值读回。
-  eq(Number(controlNearLabel(chat, '发原生表情的最低表达意愿').props.value), 0.55, 'expressionThreshold')
+  eq(Number(controlNearLabel(chat, '发原生表情所需的最低表达意愿（0–1，默认 0.7）。高于 0.90 时除非表情真的不可替代，模型应当省略。对齐上游 expressionThreshold。').props.value), 0.55, 'expressionThreshold')
 })
 
 /* ─────────────────── B. 聊天页：转发预算 / 跨群 / 意愿档位 ─────────────────── */
@@ -777,6 +777,7 @@ check('断言生成式段的面板夹具都必须提供描述符（否则那些�
     'client-input.test.mjs',
     'client-im-test-button.test.mjs',
     'client-panel-status-log.test.mjs',
+    'client-im.test.mjs',   // 2026-08 补：它断言 im.sayFallback 的下拉，没有描述符就看不见那一段
   ]
   const missing = MUST_HAVE.filter((f) => {
     const s = fs.readFileSync(new URL('./' + f, import.meta.url), 'utf8')
