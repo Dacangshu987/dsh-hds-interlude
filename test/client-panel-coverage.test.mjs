@@ -261,7 +261,10 @@ const state = {
     longHorizon: { enabled: true, triggerScore: 60, reviewIncrement: 120, intensity: 'moderate' },
     // 日志内容脱敏（对齐上游 Logging 段）：两个隐私开关**刻意打开**非默认值，
     // 这样面板读错（比如默认成 false）就会露馅。
-    logging: { verbosity: 'diagnostic', logScriptPreview: true, logMessageContent: true, previewLength: 1200 },
+    // 日志段已改由**生成式渲染**（内嵌在维护段里），读取的是**规范路径**
+    // `logging.level`；夹具绕过插件路由的别名归一化，所以这里写规范路径。
+    // 顶层 `logLevel`（旧别名）仍保留——面板还会写它，且 546 行那条断言钉着它。
+    logging: { level: 'warn', verbosity: 'diagnostic', logScriptPreview: true, logMessageContent: true, previewLength: 1200 },
     // 失明模式（对齐上游 BlindMode）：刻意用非默认值（关卡 + 非默认间隔）。
     blindMode: { enabled: true, healthReportMinutes: 25 },
     // 运行时天气（生成式渲染的第一块）：刻意用**非默认值**——只断言「字段存在」
@@ -425,9 +428,10 @@ check('生成式渲染：长线叙事（自动生成）断言**值**，且无效
 check('扩展页有日志内容脱敏两项（对齐上游 Logging），且读回配置值', () => {
   // 夹具里两个隐私开关**都显式打开**——面板读错（例如把「默认关」写成默认开、
   // 或把 === true 写成 !== false）都会在这里露馅。
-  eq(checkboxNear(advanced, '日志里带剧本正文片段').props.checked, true, 'logScriptPreview')
-  eq(checkboxNear(advanced, '日志里带用户消息与角色可见消息内容').props.checked, true, 'logMessageContent')
-  eq(controlNearLabel(advanced, '日志里的内容预览字数').props.value, 1200, 'previewLength')
+  // 该段已改为**内嵌生成式渲染**：标签来自 schema 描述，不再是手写文案。
+  eq(checkboxNear(advanced, '是否输出本轮剧本内容').props.checked, true, 'logScriptPreview')
+  eq(checkboxNear(advanced, '是否输出用户消息与主角可见消息内容').props.checked, true, 'logMessageContent')
+  eq(controlNearLabel(advanced, '最大字符数').props.value, 1200, 'previewLength')
   eq(controlNearLabel(advanced, '运行信息密度').props.value, 'diagnostic', 'verbosity')
 })
 
