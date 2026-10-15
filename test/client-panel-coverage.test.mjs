@@ -738,6 +738,7 @@ check('已迁移的组不得再有手写控件（同一设置出现两个输入�
   const clientSrc = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
   const MIGRATED_SCALAR_PREFIXES = {
     'im.chunking': ['imSplitReply', 'imMessageSeparator', 'imConvertNewline', 'imMaxMessages', 'imMaxChars', 'imChunkInterval', 'imTyping'],
+    '顶层时间三项': ['timeZone', 'gapNoticeMinutes', 'alwaysReportTime'],
   }
   const leftover = []
   for (const [group, prefixes] of Object.entries(MIGRATED_SCALAR_PREFIXES)) {

@@ -356,10 +356,13 @@ await check('同一帧里改两个标量（时区 + 间隔），两处都要留�
   // 第二次会把第一次整个覆盖掉。
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  const tz = byPlaceholder(tree, 'Asia/Shanghai')
+  // 生成式字段**不带 placeholder**（那是手写版的写法），所以改按**标签文案**定位。
+  const tzLabel = all(tree).find(el => el.tag === 'label' && textOf(el) === '角色所在 IANA 时区。')
+  const tzCell = all(tree).find(el => Array.isArray(el.props?.children) && el.props.children.includes(tzLabel))
+  const tz = tzCell && all(tzCell).find(el => el.tag === 'input' && el.props.type === 'text')
   // 按**文案**找间隔输入框，而不是「节奏页第一个数字框」——生成式段按页挂载后
   // 页首是自动段，取第一个必然找错（这类依赖顺序的写法已连续踩了两次）。
-  const num = numberBoxByLabel(tree, '间隔提示（分钟）')
+  const num = numberBoxByLabel(tree, '距上次互动超过多少分钟才在幕间块里提示「过了多久」。')
   assert.ok(tz && num, '找不到时区/数字输入框')
   // 同一帧内连续两次标量改动，中间不重渲染。
   type(tz, 'Europe/London')
@@ -377,7 +380,7 @@ await check('间隔提示填 0 不该被悄悄改成 30', async () => {
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
   // 同上：按文案定位，不依赖控件顺序。
-  const box = numberBoxByLabel(tree, '间隔提示（分钟）')
+  const box = numberBoxByLabel(tree, '距上次互动超过多少分钟才在幕间块里提示「过了多久」。')
   assert.ok(box, '找不到间隔输入框')
   type(box, '0')
   tree = rerender()
@@ -560,7 +563,7 @@ await check('开关尺寸来自内联样式（36×20 胶囊，而不是 15×15 �
   // 14px 滑块几乎填满轨道，:checked 的 translateX(16px) 又把滑块推出盒子外。
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  const st = switchByLabel(tree, '每回合都注入当前时间').props.style
+  const st = switchByLabel(tree, '每回合都注入当前时间，即使没有其它事实。').props.style
   assert.equal(st.width, 36, `开关宽度应是 36（内联），实际 ${st.width}`)
   assert.equal(st.height, 20, `开关高度应是 20（内联），实际 ${st.height}`)
   assert.equal(st.borderRadius, 999, '轨道应是胶囊圆角')
@@ -573,7 +576,7 @@ await check('滑块与轨道用背景图表达（不依赖 ::after 伪元素）'
   // 无论渲染环境如何都能画出滑块。
   let tree = await mount({})
   tree = switchTab(tree, '节奏')
-  const st = switchByLabel(tree, '每回合都注入当前时间').props.style
+  const st = switchByLabel(tree, '每回合都注入当前时间，即使没有其它事实。').props.style
   assert.match(String(st.backgroundImage), /radial-gradient/, '滑块应是 radial-gradient 背景图')
   assert.equal(st.backgroundRepeat, 'no-repeat')
   assert.equal(st.backgroundSize, '16px 16px')
@@ -586,7 +589,7 @@ await check('开/关两态的轨道色与滑块位置不同（checked 由渲染�
   tree = switchTab(tree, '节奏')
   const onBox = switchByLabel(tree, '主动联系') // 默认 true
   assert.equal(onBox.props.checked, true, '前置条件：这个开关默认开')
-  const offBox = switchByLabel(tree, '每回合都注入当前时间')
+  const offBox = switchByLabel(tree, '每回合都注入当前时间，即使没有其它事实。')
   assert.equal(offBox.props.checked, false, '前置条件：这个开关默认关')
 
   const on = onBox.props.style
