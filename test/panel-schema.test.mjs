@@ -13,7 +13,8 @@ import assert from 'node:assert/strict'
 import { Config } from '../lib/schema.js'
 import {
   describeConfig, planPanel, panelDescriptor, autoSections,
-  getAt, setAt, mergeInto, hiddenReasonFor, PANEL_HIDDEN, PANEL_SECTIONS, UPSTREAM_SECTION_ORDER,
+  getAt, setAt, mergeInto, hiddenReasonFor, PANEL_HIDDEN, PANEL_SECTIONS,
+  UPSTREAM_SECTION_ORDER, UPSTREAM_NOT_IMPLEMENTED,
 } from '../lib/panel-schema.js'
 
 let passed = 0
@@ -126,6 +127,23 @@ check('PANEL_HIDDEN：命中即标记 hidden 并带上理由；未登记的不�
   assert.ok(agency.fields.every((f) => f.hidden), 'agency. 是前缀登记，应全部隐藏')
   // 未登记的段不受影响。
   assert.equal(hiddenReasonFor('weather.latitude'), undefined)
+})
+
+check('与上游的对齐度：每个上游段**要么被映射、要么有理由**，不许无人提及', () => {
+  // 这条把本目标的一句话（「面板不再与上游配置面漂移」）变成机器校验的事实。
+  // 在此之前「还差多少」只存在于人的记忆与台账文字里；现在漏掉哪个上游段会红。
+  const mapped = new Set(Object.values(PANEL_SECTIONS).map((s) => s.upstream).filter(Boolean))
+  const unaccounted = UPSTREAM_SECTION_ORDER.filter((up) => !mapped.has(up) && !UPSTREAM_NOT_IMPLEMENTED[up])
+  assert.deepEqual(unaccounted, [], `这些上游段既没被映射也没登记理由：${JSON.stringify(unaccounted)}`)
+})
+
+check('差距表：每条都必须是真实的上游段，且不得与「已映射」自相矛盾', () => {
+  const mapped = new Set(Object.values(PANEL_SECTIONS).map((s) => s.upstream).filter(Boolean))
+  const fake = Object.keys(UPSTREAM_NOT_IMPLEMENTED).filter((k) => !UPSTREAM_SECTION_ORDER.includes(k))
+  assert.deepEqual(fake, [], `这些登记不是上游段（改了上游顺序表忘改这里）：${JSON.stringify(fake)}`)
+  // 既映射又登记「不做」= 自相矛盾。踩过一次（onebot 被 im 映射，同时又在表里）。
+  const both = Object.keys(UPSTREAM_NOT_IMPLEMENTED).filter((k) => mapped.has(k))
+  assert.deepEqual(both, [], `这些段既被映射又登记为不做：${JSON.stringify(both)}`)
 })
 
 check('字段带出默认值，且默认值与 schema 一致（不是猜的）', () => {
