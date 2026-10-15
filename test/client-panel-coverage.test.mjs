@@ -380,11 +380,12 @@ check('聊天页有原生表情结构化通道，且读回配置里的值（Chat
 /* ─────────────────── B. 聊天页：转发预算 / 跨群 / 意愿档位 ─────────────────── */
 
 check('聊天页有合并转发预算三项，且读回配置值（rc6）', () => {
-  const nodes = controlNearLabel(chat, '最多展开节点数')
+  // 该组已迁移到生成式渲染：标签来自 **schema 描述**（不再是手写文案）。
+  const nodes = controlNearLabel(chat, '最多展开多少节点')
   assert.ok(nodes, '没找到「最多展开节点数」')
   eq(nodes.props.value, 10, '节点上限')
   eq(controlNearLabel(chat, '字符预算').props.value, 4000, '字符预算')
-  eq(controlNearLabel(chat, '嵌套递归深度').props.value, 1, '嵌套深度')
+  eq(controlNearLabel(chat, '递归几层').props.value, 1, '嵌套深度')
 })
 
 check('聊天页有跨群投递（rc11）：开关已开、每轮上限与白名单读回', () => {
