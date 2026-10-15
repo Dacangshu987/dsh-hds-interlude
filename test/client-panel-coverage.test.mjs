@@ -466,10 +466,10 @@ check('扩展页有模型特化（rc14）：档位与模型名读回', () => {
 
 check('扩展页有提示词四层（对齐上游 rc50）：四个字段读回配置值', () => {
   // 上游把提示词做成 Schema 字段并明确权限分层；本仓面板按同一结构暴露。
-  eq(controlNearLabel(advanced, '主体叙事提示词（mainPrompt）').props.value, '主体叙事自定义', 'mainPrompt')
-  eq(controlNearLabel(advanced, '输出格式附加说明（formatPrompt）').props.value, '格式附加自定义', 'formatPrompt')
-  eq(controlNearLabel(advanced, '附加固定指令（fixedPrompt）').props.value, '固定指令自定义', 'fixedPrompt')
-  eq(controlNearLabel(advanced, '文风（stylePrompt）').props.value, '文风自定义', 'stylePrompt')
+  eq(controlNearLabel(advanced, '主体叙事提示词（可整体替换；留空用上游默认）。对齐上游 mainPrompt。').props.value, '主体叙事自定义', 'mainPrompt')
+  eq(controlNearLabel(advanced, '输出格式的附加说明（可选）。**不能**移除工具调用与分条合约。对齐上游 formatPrompt。').props.value, '格式附加自定义', 'formatPrompt')
+  eq(controlNearLabel(advanced, '插件所有者配置的附加固定指令。**不能**覆盖工具调用与分条合约。对齐上游 fixedPrompt。').props.value, '固定指令自定义', 'fixedPrompt')
+  eq(controlNearLabel(advanced, '文风指令（只作用于剧本散文）。**不能**覆盖合约。角色卡里的文风会作为故事专属文风追加在后面。对齐上游 stylePrompt。').props.value, '文风自定义', 'stylePrompt')
 })
 
 check('扩展页有维护段（记忆窗口 / 休息时段 / 日志）并读回配置值', () => {
@@ -507,8 +507,8 @@ current = await setValue(controlNearLabel(goTab('聊天'), '最多执行几次')
 // 扩展页：改休息时段（两行 → 解析成两个窗口）
 current = await setValue(controlNearLabel(goTab('扩展'), '休息时段'), '23:00-07:00\n13:00-14:00')
 // 扩展页：改提示词四层（对齐上游 rc50）
-current = await setValue(controlNearLabel(goTab('扩展'), '主体叙事提示词（mainPrompt）'), '新的主体叙事')
-current = await setValue(controlNearLabel(current, '文风（stylePrompt）'), '新的文风')
+current = await setValue(controlNearLabel(goTab('扩展'), '主体叙事提示词（可整体替换；留空用上游默认）。对齐上游 mainPrompt。'), '新的主体叙事')
+current = await setValue(controlNearLabel(current, '文风指令（只作用于剧本散文）。**不能**覆盖合约。角色卡里的文风会作为故事专属文风追加在后面。对齐上游 stylePrompt。'), '新的文风')
 // 创作页：把 perspectives 清空（验「送空数组」，否则深合并会把旧条目留下）
 current = await setValue(controlNearLabel(goTab('创作'), '价值观·多条独立条目'), '')
 // 节奏页：把对话后续补写列表清空（同样要送 []，= 关闭该回路）
@@ -739,6 +739,7 @@ check('已迁移的组不得再有手写控件（同一设置出现两个输入�
   const MIGRATED_SCALAR_PREFIXES = {
     'im.chunking': ['imSplitReply', 'imMessageSeparator', 'imConvertNewline', 'imMaxMessages', 'imMaxChars', 'imChunkInterval', 'imTyping'],
     '顶层时间三项': ['timeZone', 'gapNoticeMinutes', 'alwaysReportTime'],
+    '顶层提示词与规则': ['rules', 'mainPrompt', 'formatPrompt', 'fixedPrompt', 'stylePrompt'],
   }
   const leftover = []
   for (const [group, prefixes] of Object.entries(MIGRATED_SCALAR_PREFIXES)) {
