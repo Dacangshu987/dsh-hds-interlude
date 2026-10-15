@@ -209,6 +209,9 @@ const state = {
     // 用**规范路径** stickers.* —— 夹具绕过插件路由，所以旧写法 im.catalogLimit
     // 的兼容映射（MOVED_PATHS）在这里不会发生。生产里两种写法都行。
     stickers: { catalogLimit: 25, maxFileSizeMB: 7 },
+    // memory 段（对齐上游顶层段）：同样用**规范路径**——夹具绕过插件路由，
+    // 旧写法 runtime.contextEntryLimit / runtime.memoryLimit 的搬移映射不会发生。
+    memory: { recentEntryLimit: 35, factLimit: 12 },
     story: {
       character: { name: '江柚', profile: '设计师', speech: '爱用短句' },
       perspective: '单条价值观',
@@ -474,9 +477,9 @@ check('扩展页有提示词四层（对齐上游 rc50）：四个字段读回�
 })
 
 check('扩展页有维护段（记忆窗口 / 休息时段 / 日志）并读回配置值', () => {
-  eq(controlNearLabel(advanced, '历史上下文条数闸').props.value, 35, '条数闸')
+  eq(controlNearLabel(advanced, '每次主叙事附带多少条最近原始条目。对齐上游 Memory.recentEntryLimit（本仓原名 contextEntryLimit）。').props.value, 35, '条数闸')
   eq(controlNearLabel(advanced, '剧本历史上下文的时间窗闸：最近多少分钟内的条目全部并入（即使超过条数）。与条数闸取并集；0 = 关闭时间窗。').props.value, 45, '时间窗')
-  eq(controlNearLabel(advanced, '长期事实读取上限').props.value, 12, '事实上限')
+  eq(controlNearLabel(advanced, '每次主叙事附带多少条长期事实。对齐上游 Memory.factLimit（本仓原名 memoryLimit）。').props.value, 12, '事实上限')
   eq(controlNearLabel(advanced, '休息时段').props.value, '22:30-06:30', '休息时段文本')
   const intervalInputs = controlsNearLabel(advanced, '窗口内推进间隔')
   eq(intervalInputs.length, 2, '窗口间隔应有最短/最长两个输入')
@@ -782,10 +785,8 @@ check('剩余手写控件必须逐条登记理由（面板与 schema 的差距 =
     restWindowMinMinutes: '休息窗口最短间隔：从 restWindows 数组**派生**的聚合值，没有自己的配置路径',
     restWindowMaxMinutes: '休息窗口最长间隔：同上，派生值',
   }
-  const PENDING = {
-    contextEntryLimit: '属 memory 段（memory.recentEntryLimit）：**可迁、待做**',
-    memoryLimit: '属 memory 段（memory.factLimit）：**可迁、待做**',
-  }
+  // 已无「可迁待做」项：memory 段两个字段本轮迁完（见 git log 50 轮）。
+  const PENDING = {}
   const unregistered = names.filter((n) => !KEPT_HAND_WRITTEN[n] && !PENDING[n])
   eq(unregistered, [], `这些手写控件没有登记理由（迁移或登记二选一）：${JSON.stringify(unregistered)}`)
   const stale = Object.keys(KEPT_HAND_WRITTEN).concat(Object.keys(PENDING)).filter((n) => names.indexOf(n) < 0)
