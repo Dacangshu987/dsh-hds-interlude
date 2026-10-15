@@ -474,18 +474,21 @@ check('扩展页有提示词四层（对齐上游 rc50）：四个字段读回�
 
 check('扩展页有维护段（记忆窗口 / 休息时段 / 日志）并读回配置值', () => {
   eq(controlNearLabel(advanced, '历史上下文条数闸').props.value, 35, '条数闸')
-  eq(controlNearLabel(advanced, '历史上下文时间窗').props.value, 45, '时间窗')
+  eq(controlNearLabel(advanced, '剧本历史上下文的时间窗闸：最近多少分钟内的条目全部并入（即使超过条数）。与条数闸取并集；0 = 关闭时间窗。').props.value, 45, '时间窗')
   eq(controlNearLabel(advanced, '长期事实读取上限').props.value, 12, '事实上限')
   eq(controlNearLabel(advanced, '休息时段').props.value, '22:30-06:30', '休息时段文本')
   const intervalInputs = controlsNearLabel(advanced, '窗口内推进间隔')
   eq(intervalInputs.length, 2, '窗口间隔应有最短/最长两个输入')
   eq(intervalInputs[0].props.value, 90, '窗口最短间隔')
   eq(intervalInputs[1].props.value, 180, '窗口最长间隔')
-  const guard = checkboxNear(advanced, '连发同条数守卫')
+  const guard = checkboxNear(advanced, '连发同条数守卫：她最近连续几批都以相同条数开口时，提醒模型别复刻这个形态。')
   assert.ok(guard, '没找到条数守卫开关')
   eq(guard.props.checked, false, '守卫应读回 false')
-  eq(checkboxNear(advanced, '休息时段也允许普通的主动联系').props.checked, true, 'duringSleep 应读回 true')
-  eq(checkboxNear(advanced, '答应过的事').props.checked, false, 'duringSleepPromises 应读回 false')
+  // 这两项属于 **proactive 段**（自动生成在**节奏页**）——维护段里原先那两个开关已删
+  // （同一字段两处渲染属于重复），所以断言跟着搬到节奏页。
+  const rhythmTab = goTab('节奏')
+  eq(checkboxNear(rhythmTab, '是否允许在休息时段主动开口（普通生活型联系）。').props.checked, true, 'duringSleep 应读回 true')
+  eq(checkboxNear(rhythmTab, '承诺型到期待办（提醒/回访/主动问候/延迟回复）是否豁免休息时段。').props.checked, false, 'duringSleepPromises 应读回 false')
   const log = collectInputs(advanced).find(i => i.tag === 'select' && (i.children ?? []).some(o => o.props?.value === 'warn'))
   assert.ok(log, '没找到日志级别下拉')
   eq(log.props.value, 'warn', '日志级别')
@@ -743,6 +746,7 @@ check('已迁移的组不得再有手写控件（同一设置出现两个输入�
     '消息节奏段': ["autoAdvanceIntervalMinutes","messageIntervalMinutes","conversationFollowUpMinutes","conversationFollowUpJitterMinutes","minimumAdvanceMinutes","autoAdvanceJitterMinutes","roleplayOnly","autoMessage"],
     '功能开关段': ["proactiveEnabled","autoAdvanceEnabled","agencyEnabled","alterEnabled","preplanEnabled","urgeEnabled"],
     '表情与图片三开关': ["imImagesEnabled","imHarvestInbound","imFaceEnabled"],
+    '维护段的两个 runtime 控件': ["repetitionGuard","contextTimeWindowMinutes","proactiveDuringSleep","proactiveDuringSleepPromises"],
   }
   const leftover = []
   for (const [group, prefixes] of Object.entries(MIGRATED_SCALAR_PREFIXES)) {
