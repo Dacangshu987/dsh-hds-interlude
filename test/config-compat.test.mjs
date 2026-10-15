@@ -175,5 +175,39 @@ check('语义归一：deliverAutoAdvance=false（老开关）会把 autoMessage 
   assert.equal(onlyNew.im.autoMessage, true, '只写新键 → 不受影响')
 })
 
+check('用户 profile 的真实形状：旧写法全部生效，新键也被填上', () => {
+  /*
+   * 这条用的是 `~/.dsh/profiles/web/cordis.patch.yml` 里的**真实键与值**
+   * （2026-10 当时的现状）：`logLevel`、`runtime.contextEntryLimit`、
+   * `runtime.memoryLimit`、`im.stickerDir`、`im.autoMessage`、`storyDefaults`。
+   *
+   * 为什么单靠函数级单测不够：改名这件事的风险不在「函数算得对不对」，
+   * 而在**用户现有那几行会不会失效**。所以这条按真实形状逐项核对「旧值仍在、新键被填」。
+   */
+  const DEFAULTS = Config({})
+  const user = {
+    logLevel: 'info',
+    runtime: { contextEntryLimit: 50, memoryLimit: 20 },
+    im: { stickerDir: '', autoMessage: true },
+    storyDefaults: { character: { name: '江柚' } },
+  }
+  const out = normalizeConfigAliases(user, { defaults: DEFAULTS })
+  const get = (o, p) => p.split(".").reduce((x, k) => (x == null ? x : x[k]), o)
+  const cases = [
+    ['runtime.contextEntryLimit', 50],
+    ['memory.recentEntryLimit', 50],
+    ['runtime.memoryLimit', 20],
+    ['memory.factLimit', 20],
+    ['im.stickerDir', ''],
+    ['stickers.directory', ''],
+    ['logging.level', 'info'],
+    ['storyDefaults.character.name', '江柚'],
+    ['im.autoMessage', true],
+  ]
+  for (const [p, want] of cases) {
+    assert.equal(get(out, p), want, `profile 真实形状：${p} 应为 ${JSON.stringify(want)}`)
+  }
+})
+
 console.log(`\n配置改名兼容层：通过 ${passed} 项，失败 ${failed} 项`)
 process.exit(failed === 0 ? 0 : 1)
