@@ -9,7 +9,8 @@
 
 import assert from 'node:assert/strict'
 
-import { RENAMED_KEYS, normalizeConfigAliases, readAliased } from '../lib/config-compat.js'
+import { Config } from '../lib/schema.js'
+import { RENAMED_KEYS, MOVED_PATHS, normalizeConfigAliases, readAliased } from '../lib/config-compat.js'
 
 let passed = 0
 let failed = 0
@@ -111,6 +112,49 @@ check('带 defaults：两个都不是默认值 → 仍是新名赢（改名后�
 check('不带 defaults：退回「新名优先」（调用方明确知道没有默认值填充时可用）', () => {
   const out = normalizeConfigAliases({ story: { v: 'old' }, storyDefaults: { v: 'new' } })
   assert.equal(out.story.v, 'new')
+})
+
+/* ───────── 路径搬移（把字段从 im 折进独立段时用） ───────── */
+
+const MOVED = { 'im.stickerDir': 'stickers.directory' }
+
+check('搬移：只写旧路径 → 新路径也被填上（新读取点可用）', () => {
+  const out = normalizeConfigAliases({ im: { stickerDir: 'D:/pics' } }, { moved: MOVED })
+  assert.equal(out.stickers.directory, 'D:/pics', '新路径应被填上')
+  assert.equal(out.im.stickerDir, 'D:/pics', '旧路径保留（迁移期旧读取点还在）')
+})
+
+check('搬移：只写新路径 → 旧路径也被填上（旧读取点照常工作）', () => {
+  const out = normalizeConfigAliases({ stickers: { directory: 'D:/new' } }, { moved: MOVED })
+  assert.equal(out.im.stickerDir, 'D:/new')
+  assert.equal(out.stickers.directory, 'D:/new')
+})
+
+check('搬移：新路径只是默认值、旧路径不是 → 用旧路径（同改名的那个坑）', () => {
+  // 【前提】这条判断依赖**两个路径都在 schema 里**——否则取不到新路径的默认值，
+  // 就分不清「新路径是 schema 填的」还是「用户写的」。这与改名那条结论一致：
+  // **光加兼容不够，新路径必须先进 schema**（这也正是下一步的顺序）。
+  // 所以这里显式给出两边的默认值来模拟「新段已就位」之后的状态。
+  const defaults = { im: { stickerDir: '' }, stickers: { directory: '' } }
+  const raw = { im: { stickerDir: 'D:/用户填的' }, stickers: { directory: '' } }
+  const out = normalizeConfigAliases(raw, { moved: MOVED, defaults })
+  assert.equal(out.stickers.directory, 'D:/用户填的', '用户写的旧路径必须赢')
+  assert.equal(out.im.stickerDir, 'D:/用户填的', '并把旧路径对齐')
+})
+
+check('搬移：表中没有的路径不动（不留第二个清单）', () => {
+  assert.deepEqual(MOVED_PATHS, {}, '当前搬移表应为空——第一条随 stickers 段迁移一起加')
+  const out = normalizeConfigAliases({ im: { other: 1 } }, { moved: MOVED })
+  assert.equal(out.im.other, 1)
+  assert.equal('stickers' in out, false, '不该凭空造出 stickers')
+})
+
+check('搬移：不改入参 + 幂等', () => {
+  const input = { im: { stickerDir: 'D:/pics' } }
+  const snapshot = JSON.stringify(input)
+  const once = normalizeConfigAliases(input, { moved: MOVED })
+  assert.equal(JSON.stringify(input), snapshot, '入参被改了')
+  assert.deepEqual(normalizeConfigAliases(once, { moved: MOVED }), once, '应幂等')
 })
 
 check('改名对表是唯一来源（键名只在这里出现一次）', () => {
