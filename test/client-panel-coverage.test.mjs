@@ -719,6 +719,32 @@ check('生成式段**按页挂载**：时间导演在节奏页，长线叙事在
   assert.ok(!rhythm.includes('长线叙事【扩展 16】'), '长线叙事不该出现在节奏页')
 })
 
+/* ───────── 夹具卫生：断言生成式段的面板夹具**必须**提供描述符 ───────── */
+
+check('断言生成式段的面板夹具都必须提供描述符（否则那些段静默消失）', () => {
+  /*
+   * 这条不变量来自一个**连踩四次**的坑：面板的生成式段靠 `/panel-schema` 描述符才渲染，
+   * 而每个测试夹具都自带一个 fetch 假实现——**没补描述符的夹具里，生成式段根本不出现**。
+   *
+   * 症状很难认：不是「字段画错了」，而是「整段不在那儿」，于是按标签查找返回 null、
+   * 报错停在 `.props` 上（我为此在 crossConversation 与 willingness 上各绕了一轮）。
+   *
+   * 这里只钉住**断言了生成式段的**夹具。其它面板夹具（只查载荷、样式、二维码流程等）
+   * 暂时不需要描述符；但**一旦开始断言生成式段，就必须补上**——补法是照抄这 4 个之一。
+   */
+  const MUST_HAVE = [
+    'client-panel-coverage.test.mjs',
+    'client-input.test.mjs',
+    'client-im-test-button.test.mjs',
+    'client-panel-status-log.test.mjs',
+  ]
+  const missing = MUST_HAVE.filter((f) => {
+    const s = fs.readFileSync(new URL('./' + f, import.meta.url), 'utf8')
+    return !s.includes('/panel-schema')
+  })
+  eq(missing, [], `这些夹具没提供面板描述符，生成式段会静默消失：${JSON.stringify(missing)}`)
+})
+
 /* ───────── 生成式字段「真的被画出来」了吗（补上一轮暴露的盲区） ───────── */
 
 /** 收集渲染树里所有带 data-hdsi-path 标记的路径。 */
