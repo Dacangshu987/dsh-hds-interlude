@@ -548,8 +548,10 @@ if (saveCall) {
     eq(value.stylePrompt, '新的文风', 'stylePrompt')
     eq(value.formatPrompt, '格式附加自定义', 'formatPrompt 未被漏写')
     eq(value.fixedPrompt, '固定指令自定义', 'fixedPrompt 未被漏写')
-    eq(value.runtime?.contextEntryLimit, 35, 'runtime.contextEntryLimit')
-    eq(value.runtime?.memoryLimit, 12, 'runtime.memoryLimit')
+    // 这两项已升为顶层 memory 段（字段名按上游改）。旧路径由 config-compat 兜住，
+    // 但面板**写入**用的是新路径——这里断言的正是写入结果。
+    eq(value.memory?.recentEntryLimit, 35, 'memory.recentEntryLimit')
+    eq(value.memory?.factLimit, 12, 'memory.factLimit')
     eq(value.runtime?.repetitionGuard, false, 'runtime.repetitionGuard')
     eq(Array.isArray(value.runtime?.restWindows) ? value.runtime.restWindows.length : -1, 2, '休息时段应解析成两条窗口')
     if (Array.isArray(value.runtime?.restWindows) && value.runtime.restWindows.length === 2) {
