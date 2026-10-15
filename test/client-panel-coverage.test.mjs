@@ -439,7 +439,8 @@ check('扩展页有失明模式（对齐上游 BlindMode），且读回配置值
   eq(Number(controlNearLabel(advanced, '健康心跳间隔').props.value), 25, 'healthReportMinutes')
 })
 check('扩展页有世界事件播种器（rc23）并读回配置值', () => {
-  const cb = checkboxNear(advanced, '启用：低频生成与她有关的外部事件')
+  // 该段已迁移到生成式渲染：标签来自 **schema 描述**，不再是手写文案。
+  const cb = checkboxNear(advanced, '启用世界事件播种器')
   assert.ok(cb, '没找到播种器开关')
   eq(cb.props.checked, true, '开关应读回 true')
   eq(controlNearLabel(advanced, '生成检查间隔').props.value, 30, '检查间隔')

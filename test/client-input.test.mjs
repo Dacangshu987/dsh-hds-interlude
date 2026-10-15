@@ -739,11 +739,11 @@ await check('搜索：标题命中或**区内文字**命中的分区都强制展
 
   // 按**区内文字**搜（标题里没有这个词）。
   const box2 = searchBox(tree)
-  box2.props.onChange({ target: { value: '执行器' } })
+  // 用**生成式段**里确实存在的文字（schema 描述）。原先用「执行器」——那是手写
+  // 提示文案里的词，段迁移到生成式后就不存在了，这条因此失效（测试自己提醒了我）。
+  box2.props.onChange({ target: { value: '她的世界会在你不在时' } })
   tree = rerender()
-  const anyMatched = ['世界事件播种器【扩展 15】', '长线叙事【扩展 16】']
-    .some(title => sectionOpen(tree, title) === true)
-  assert.ok(anyMatched, '按区内文字也应命中并展开')
+  assert.equal(sectionOpen(tree, '世界事件播种器【扩展 15】'), true, '按区内文字也应命中并展开')
 
   // 清空 → 回到默认开合。
   searchBox(tree).props.onChange({ target: { value: '' } })
