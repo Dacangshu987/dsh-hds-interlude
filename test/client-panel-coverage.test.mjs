@@ -205,6 +205,10 @@ const state = {
     fixedPrompt: '固定指令自定义',
     stylePrompt: '文风自定义',
     // 剧本起点（对齐上游 StoryDefaults）：含两个上游新增的多条目字段。
+    // 表情清单上限（对齐上游 Stickers 段）：刻意用非默认值。
+    // 用**规范路径** stickers.* —— 夹具绕过插件路由，所以旧写法 im.catalogLimit
+    // 的兼容映射（MOVED_PATHS）在这里不会发生。生产里两种写法都行。
+    stickers: { catalogLimit: 25, maxFileSizeMB: 7 },
     story: {
       character: { name: '江柚', profile: '设计师', speech: '爱用短句' },
       perspective: '单条价值观',
@@ -230,9 +234,6 @@ const state = {
         typingMaxDelaySeconds: 8,
         typingJitterRatio: 0.1,
       },
-      // 表情清单上限（对齐上游 Stickers 段）：刻意用非默认值。
-      catalogLimit: 25,
-      maxFileSizeMB: 7,
       // 原生表情结构化通道（对齐上游 ChatActions 段）：刻意用非默认值。
       allowedNativeFaces: ['smile', 'angry'],
       expressionThreshold: 0.55,
@@ -356,10 +357,10 @@ check('聊天页有气泡边界协议三项，且读回配置里的值（rc36）
 })
 
 check('聊天页有表情清单两个上限，且读回配置里的值（Stickers 段）', () => {
-  const inputs = controlsNearLabel(chat, '表情包清单上限')
-  eq(inputs.length, 2, '应当是「条数 + 体积」两个输入')
-  eq(Number(inputs[0].props.value), 25, 'catalogLimit')
-  eq(Number(inputs[1].props.value), 7, 'maxFileSizeMB')
+  // 两个上限已迁到生成式渲染：**各自独立成格**（原先合在一个单元格、两个输入并排），
+  // 所以按各自的 schema 描述分别定位。标签来自描述，不再手写。
+  eq(Number(controlNearLabel(chat, '单次最多给模型看多少条表情包清单。对齐上游 Stickers.catalogLimit。').props.value), 25, 'catalogLimit')
+  eq(Number(controlNearLabel(chat, '单个表情包允许进清单的最大体积（MB）；超过的不列给模型。对齐上游 Stickers.maxFileSizeMB。').props.value), 7, 'maxFileSizeMB')
 })
 
 check('节奏页有对话后续补写与手动推进下限，且读回配置里的值（rc50）', () => {
