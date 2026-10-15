@@ -735,10 +735,11 @@ check('内嵌段：字段**真的画出来了**（只进保存载荷不算——
     const m = clientSrc.match(new RegExp('var ' + name + ' = \\[([^\\]]*)\\]'))
     return (m ? m[1] : '').split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean)
   }
-  const embedded = listOf('EMBEDDED_SECTIONS')
+  const embedded = listOf('EMBEDDED_PATHS')
   const auto = listOf('AUTO_RENDERED_SECTIONS')
   // 两个清单不得重叠：一处独立渲染、一处内嵌，同时登记会画两遍。
-  eq(embedded.filter((k) => auto.includes(k)), [], '同一段不得同时登记为独立渲染与内嵌渲染')
+  eq(embedded.map((x) => String(x).split('.')[0]).filter((k) => auto.includes(k)), [],
+    '同一段不得同时登记为独立渲染与内嵌渲染')
   if (!embedded.length) return
 
   // 走遍所有页，收齐渲染出来的路径。
@@ -748,18 +749,42 @@ check('内嵌段：字段**真的画出来了**（只进保存载荷不算——
   }
 
   const desc = panelDescriptor(ConfigSchema)
-  for (const key of embedded) {
-    const section = desc.sections.find((s) => s.key === key)
-    assert.ok(section, `内嵌段 ${key} 不在描述符里`)
-    const want = []
-    for (const f of section.fields) {
-      if (f.hidden) continue
-      want.push(f.path)
-      for (const g of f.fields || []) if (!g.hidden) want.push(g.path)
+  /** 把一个清单项（段 key 或嵌套路径）解析成它**应当渲染**的叶子路径。 */
+  const wantOf = (entry) => {
+    const sectionKey = String(entry).split('.')[0]
+    const section = desc.sections.find((s) => s.key === sectionKey)
+    assert.ok(section, `内嵌项 ${entry} 找不到对应段 ${sectionKey}`)
+    // 先按路径定位「子树」：段 key 时是整段；嵌套路径时是那个组或那个叶子。
+    let fields = section.fields
+    if (entry !== sectionKey) {
+      let node = null
+      const walk = (list) => {
+        for (const f of list) {
+          if (node) return
+          if (f.path === entry) { node = f; return }
+          if (f.fields) walk(f.fields)
+        }
+      }
+      walk(section.fields)
+      assert.ok(node, `内嵌项 ${entry} 在描述符里不存在`)
+      fields = node.fields ? node.fields : [node]
     }
-    assert.ok(want.length > 0, `内嵌段 ${key} 没有任何可渲染字段？`)
+    const out = []
+    const collect = (list) => {
+      for (const f of list) {
+        if (f.hidden) continue
+        if (f.fields) collect(f.fields)
+        else out.push(f.path)
+      }
+    }
+    collect(fields)
+    return out
+  }
+  for (const entry of embedded) {
+    const want = wantOf(entry)
+    assert.ok(want.length > 0, `内嵌项 ${entry} 没有任何可渲染字段？`)
     const missing = want.filter((x) => !rendered.has(x))
-    eq(missing, [], `${key} 的这些字段**登记为内嵌却没有被渲染**：${JSON.stringify(missing)}`)
+    eq(missing, [], `${entry} 的这些字段**登记为内嵌却没有被渲染**：${JSON.stringify(missing)}`)
   }
 })
 
