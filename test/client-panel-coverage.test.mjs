@@ -267,7 +267,8 @@ const state = {
     // 这样面板读错（比如默认成 false）就会露馅。
     // 日志段已改由**生成式渲染**（内嵌在维护段里），读取的是**规范路径**
     // `logging.level`；夹具绕过插件路由的别名归一化，所以这里写规范路径。
-    // 顶层 `logLevel`（旧别名）仍保留——面板还会写它，且 546 行那条断言钉着它。
+    // 顶层 `logLevel`（旧别名）由**兼容层**读取并映射到 logging.level；
+    // 面板不再双写它（schema 里那份重复定义已删）。
     logging: { level: 'warn', verbosity: 'diagnostic', logScriptPreview: true, logMessageContent: true, previewLength: 1200 },
     // 失明模式（对齐上游 BlindMode）：刻意用非默认值（关卡 + 非默认间隔）。
     blindMode: { enabled: true, healthReportMinutes: 25 },
@@ -563,7 +564,9 @@ if (saveCall) {
     eq(value.im?.chunking?.typingJitterRatio, 0.1, 'typingJitterRatio 未被取整破坏')
   })
   check('维护段的改动也落对路径（含休息时段解析成两个窗口）', () => {
-    eq(value.logLevel, 'warn', 'logLevel')
+    // 面板只写**规范键** `logging.level`（重复的顶层 logLevel 已从 schema 与面板里去掉）；
+    // 用户 yaml 里的顶层 `logLevel` 仍由兼容层映射（见 test/config-compat.test.mjs）。
+    eq(value.logging?.level, 'warn', 'logging.level')
     // 提示词四层：改过的落新值，没改的保持原值（面板不能漏写）。
     eq(value.mainPrompt, '新的主体叙事', 'mainPrompt')
     eq(value.stylePrompt, '新的文风', 'stylePrompt')
