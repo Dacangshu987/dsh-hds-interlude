@@ -759,6 +759,39 @@ check('已迁移的组不得再有手写控件（同一设置出现两个输入�
   eq(leftover, [], `这些已迁移的组仍有手写控件（会出现双份控件）：${JSON.stringify(leftover)}`)
 })
 
+/* ───────── 剩余手写控件：逐条登记理由（把「差距」变成清单） ───────── */
+
+check('剩余手写控件必须逐条登记理由（面板与 schema 的差距 = 这张清单）', () => {
+  const clientSrc = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const names = [...new Set((clientSrc.match(/updateScalar\('([A-Za-z0-9]+)'/g) || [])
+    .map((s) => s.replace(/updateScalar\('/, '').replace(/'$/, '')))]
+  /*
+   * 迁移完成后**剩下的手写控件**——每条都要写清「为什么不交给 schema」。
+   *
+   * 双向校验：① 有手写控件没登记 → 红（防止悄悄新增手写控件）；
+   * ② 登记了却已不存在 → 红（防止清单烂掉、变成没人看的文字）。
+   * 这样「面板还差多少」不再靠人回忆，而是一张能被测试守住的清单。
+   */
+  const KEPT_HAND_WRITTEN = {
+    imStickerDir: '表情包目录：自定义「目录选择器」区块（白名单之一）',
+    imCwd: '机器人工作目录：同上的目录选择器（每个 bot 一处，共 3 处）',
+    imAgentPreset: '机器人列表内的角色预设选择：属于「机器人列表」自定义区块',
+    imAllowedNativeFaces: '原生表情多选：不是普通输入，而是自定义列表 UI',
+    presetSyncShareCode: '分享码输入：属于「分享码预览 / 应用」自定义区块（与按钮同处）',
+    restWindowsText: '休息时段：友好文本（23:00-07:00 每行一条）→ 窗口对象的解析控件，换成 JSON 是倒退',
+    restWindowMinMinutes: '休息窗口最短间隔：从 restWindows 数组**派生**的聚合值，没有自己的配置路径',
+    restWindowMaxMinutes: '休息窗口最长间隔：同上，派生值',
+  }
+  const PENDING = {
+    contextEntryLimit: '属 memory 段（memory.recentEntryLimit）：**可迁、待做**',
+    memoryLimit: '属 memory 段（memory.factLimit）：**可迁、待做**',
+  }
+  const unregistered = names.filter((n) => !KEPT_HAND_WRITTEN[n] && !PENDING[n])
+  eq(unregistered, [], `这些手写控件没有登记理由（迁移或登记二选一）：${JSON.stringify(unregistered)}`)
+  const stale = Object.keys(KEPT_HAND_WRITTEN).concat(Object.keys(PENDING)).filter((n) => names.indexOf(n) < 0)
+  eq(stale, [], `这些登记项在面板里已不存在（清单要更新）：${JSON.stringify(stale)}`)
+})
+
 /* ───────── 夹具卫生：断言生成式段的面板夹具**必须**提供描述符 ───────── */
 
 check('断言生成式段的面板夹具都必须提供描述符（否则那些段静默消失）', () => {
