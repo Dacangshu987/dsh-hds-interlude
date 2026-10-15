@@ -690,6 +690,55 @@ check('生成式段**按页挂载**：时间导演在节奏页，长线叙事在
   assert.ok(!rhythm.includes('长线叙事【扩展 16】'), '长线叙事不该出现在节奏页')
 })
 
+/* ───────── 生成式字段「真的被画出来」了吗（补上一轮暴露的盲区） ───────── */
+
+/** 收集渲染树里所有带 data-hdsi-path 标记的路径。 */
+function collectRenderedPaths(node, out = []) {
+  if (!node || typeof node !== 'object') return out
+  const marked = node.props && node.props['data-hdsi-path']
+  if (marked) out.push(marked)
+  const kids = node.children ?? []
+  for (const k of kids) collectRenderedPaths(k, out)
+  return out
+}
+
+check('内嵌段：字段**真的画出来了**（只进保存载荷不算——那是上一轮暴露的盲区）', () => {
+  // 上一轮真出现过「字段被登记为内嵌、却没有任何地方渲染它」，而覆盖度不变量
+  // 是**绿的**——因为它只看保存载荷，而载荷由手写映射写好，看不出界面上有没有。
+  // 这条用渲染树补上：每个内嵌段的每个非隐藏字段，都必须能在界面上找到对应控件。
+  const clientSrc = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const listOf = (name) => {
+    const m = clientSrc.match(new RegExp('var ' + name + ' = \\[([^\\]]*)\\]'))
+    return (m ? m[1] : '').split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean)
+  }
+  const embedded = listOf('EMBEDDED_SECTIONS')
+  const auto = listOf('AUTO_RENDERED_SECTIONS')
+  // 两个清单不得重叠：一处独立渲染、一处内嵌，同时登记会画两遍。
+  eq(embedded.filter((k) => auto.includes(k)), [], '同一段不得同时登记为独立渲染与内嵌渲染')
+  if (!embedded.length) return
+
+  // 走遍所有页，收齐渲染出来的路径。
+  const rendered = new Set()
+  for (const label of ['创作', '节奏', '聊天', '扩展', '预设/命令']) {
+    for (const path of collectRenderedPaths(goTab(label))) rendered.add(path)
+  }
+
+  const desc = panelDescriptor(ConfigSchema)
+  for (const key of embedded) {
+    const section = desc.sections.find((s) => s.key === key)
+    assert.ok(section, `内嵌段 ${key} 不在描述符里`)
+    const want = []
+    for (const f of section.fields) {
+      if (f.hidden) continue
+      want.push(f.path)
+      for (const g of f.fields || []) if (!g.hidden) want.push(g.path)
+    }
+    assert.ok(want.length > 0, `内嵌段 ${key} 没有任何可渲染字段？`)
+    const missing = want.filter((x) => !rendered.has(x))
+    eq(missing, [], `${key} 的这些字段**登记为内嵌却没有被渲染**：${JSON.stringify(missing)}`)
+  }
+})
+
 check('生成式渲染：描述符驱动画出「运行时天气」段（字段随 schema 走）', () => {
   // 这是 2b 的验收点：天气段已**从手写迁移到生成式**——面板不再为它逐字段写 JSX，
   // 而是照着服务端描述符画。以后 schema 给它加字段，界面自动多一项。
