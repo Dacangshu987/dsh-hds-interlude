@@ -493,6 +493,9 @@ let current = view.get()
 current = await setValue(controlNearLabel(goTab('聊天'), '打字速度'), '20')
 // 扩展页：改播种器检查间隔与模型名
 current = await setValue(controlNearLabel(goTab('扩展'), '生成检查间隔'), '50')
+// 扩展页：改一个**数组字段**（拉黑名单）。必须真的编辑它——只断言播种结果是不够的：
+// 不编辑就不会触发 onChange 里的数组转换（我第一版断言就是这样，证伪时没红）。
+current = await setValue(controlNearLabel(current, '拉黑名单'), '小鹿, 老王')
 current = await setValue(controlNearLabel(current, '模型名（用于自动推断）'), 'claude-sonnet')
 // 聊天页：改跨群每轮上限
 current = await setValue(controlNearLabel(goTab('聊天'), '每轮最多几次'), '3')
@@ -541,7 +544,9 @@ if (saveCall) {
     eq(value.im?.chunking?.splitReplyMessages, false, 'splitReplyMessages 未被漏写')
     eq(value.im?.chunking?.messageSeparator, '||', 'messageSeparator 未被漏写')
     eq(value.im?.chunking?.convertNewlineToSeparator, true, 'convertNewlineToSeparator 未被漏写')
-    eq(value.worldSeeder?.blockedNames, ['小鹿'], 'worldSeeder.blockedNames')
+    // 注意：blockedNames 本轮被**刻意编辑过**（验证数组类型往返），
+    // 所以它在这里不是「未改动」那一类，期望值跟着变。
+    eq(value.worldSeeder?.blockedNames, ['小鹿', '老王'], 'worldSeeder.blockedNames')
     eq(value.specialization?.mode, 'lite', 'specialization.mode')
     eq(value.im?.chunking?.typingJitterRatio, 0.1, 'typingJitterRatio 未被取整破坏')
   })
@@ -554,6 +559,9 @@ if (saveCall) {
     eq(value.fixedPrompt, '固定指令自定义', 'fixedPrompt 未被漏写')
     // 这两项已升为顶层 memory 段（字段名按上游改）。旧路径由 config-compat 兜住，
     // 但面板**写入**用的是新路径——这里断言的正是写入结果。
+    // **断言类型**：数组字段必须往返为数组。生成器原先没有这一支，载荷里会是字符串
+    // `"小鹿, 老王"`——路径对、类型错，而覆盖度不变量只看路径，查不出来。
+    eq(value.worldSeeder?.blockedNames, ['小鹿', '老王'], 'blockedNames 应往返为字符串数组')
     eq(value.memory?.recentEntryLimit, 35, 'memory.recentEntryLimit')
     eq(value.memory?.factLimit, 12, 'memory.factLimit')
     eq(value.runtime?.repetitionGuard, false, 'runtime.repetitionGuard')
